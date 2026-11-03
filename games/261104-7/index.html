@@ -438,6 +438,13 @@ function onDown(px,py){
     case'boat':h.b.wob=1;sfx.tiny();break;
     case'obj':h.o.wob=1;sfx.tiny();break;
     case'thumb':sfx.tiny();break;
+    case'none':
+      // A touch on blank paper points out the real control; the table stays inert.
+      if(focus&&px>=L.px&&px<=L.px+L.ps&&py>=L.py&&py<=L.py+L.ps){
+        hinted.add(focus.type);
+        hand={t0:now,x:focus.x,y:focus.y,type:focus.type,held:true};
+      }
+      break;
   }
 }
 function diceDown(){
@@ -449,6 +456,7 @@ function diceDown(){
   if(dice.mode==='none'){dice.wob=1;sfx.tiny();}else sfx.press();
 }
 function onUp(ok){
+  if(hand&&hand.held){if(ok){hand.held=false;hand.t0=now;}else{hand=null;dice.demo=0;}}
   if(!dice.pressed)return;dice.pressed=false;const m=dice.mode;dice.mode=null;if(!ok)return;
   if(m==='roll'&&phase==='idle')roll();
   else if(m==='cont'&&phase==='choose')chooseDir(choice.def);
@@ -522,7 +530,7 @@ function update(dt){
   // hint hand
   if(!hand&&focus&&!trans&&now-lastInput>4&&!hinted.has(focus.type)&&!(focus.type==='dice'&&stats.rolls.length>0)){
     hinted.add(focus.type);hand={t0:now,x:focus.x,y:focus.y,type:focus.type};}
-  if(hand){const k=now-hand.t0;if(k>3.2)hand=null;else if(focus){hand.x=focus.x;hand.y=focus.y;}}
+  if(hand){const k=now-hand.t0;if(!hand.held&&k>3.2){hand=null;dice.demo=0;}else if(focus){hand.x=focus.x;hand.y=focus.y;}}
   if(trans&&now-trans.t0>1.0){thumbs.push(trans.img);if(thumbs.length>3)thumbs.shift();trans=null;}
 }
 
@@ -821,7 +829,7 @@ function drawThumbs(){
     g.drawImage(img,0,0,th.s,th.s);g.strokeStyle='rgba(234,244,255,0.7)';g.lineWidth=1;g.strokeRect(0,0,th.s,th.s);g.restore();});
 }
 function drawHand(){
-  if(!hand)return;const k=now-hand.t0;const cyc=(k%1.6)/1.6;const s=Math.max(46,L.cs*0.85);
+  if(!hand)return;const k=now-hand.t0;const cyc=hand.held?Math.min(0.45,k/1.6):(k%1.6)/1.6;const s=Math.max(46,L.cs*0.85);
   let ox=0,oy=0,sc=1,a=1;if(cyc<0.35){const e=ease(cyc/0.35);ox=(1-e)*s*0.8;oy=(1-e)*s*0.8;}else if(cyc<0.6){sc=0.9;}else{const e=ease((cyc-0.6)/0.4);ox=e*s*0.5;oy=e*s*0.5;a=1-e;}
   if(k<0.3)a*=k/0.3;if(hand.type==='dice')dice.demo=(cyc>=0.35&&cyc<0.6)?0.35:0;
   if(cyc>=0.35&&cyc<0.6){g.strokeStyle='rgba(159,214,255,0.8)';g.lineWidth=2;g.beginPath();g.arc(hand.x,hand.y,s*0.3*(1+(cyc-0.35)*2),0,Math.PI*2);g.stroke();}
