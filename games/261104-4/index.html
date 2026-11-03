@@ -1,0 +1,1258 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#141633">
+<title>ぐいーん！ドットピザ</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;background:#141633;overflow:hidden;overscroll-behavior:none;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:none}
+canvas{position:fixed;left:0;top:0;display:block;touch-action:none;image-rendering:pixelated;image-rendering:crisp-edges;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#sa{position:fixed;left:0;top:0;width:0;height:0;padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);visibility:hidden;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="sa"></div>
+<script>
+(function(){
+'use strict';
+// ================================================================
+//  ぐいーん！かたちが決まるドットピザ屋さん  (gf-261104-nx4)
+//  一本指で生地の縁を引く → 輪郭と厚みが変わる → 焼き・箱・客が変わる
+// ================================================================
+const TAU=Math.PI*2, N=64;
+const PAL=['#141633','#0b0b1c','#2a2f63','#e5432a','#8f2418','#fbefd0','#efcf8f','#d48a2c','#6e3b1c','#f8c935','#4caa48','#24683a','#ffffff','#f0aa80','#ff8e1e','#6cb4e4'];
+const BG=0,INK=1,WALL=2,RED=3,DRED=4,CREAM=5,DOUGH=6,GOLD=7,BROWN=8,CHEESE=9,GREEN=10,DGREEN=11,WHITE=12,SKIN=13,FIRE=14,SKY=15;
+const LE=new Uint8Array(new Uint32Array([0x0a0b0c0d]).buffer)[0]===0x0d;
+const P32=new Uint32Array(16);
+PAL.forEach((h,i)=>{const r=parseInt(h.substr(1,2),16),g=parseInt(h.substr(3,2),16),b=parseInt(h.substr(5,2),16);
+  P32[i]=LE?(((255<<24)|(b<<16)|(g<<8)|r)>>>0):(((r<<24)|(g<<16)|(b<<8)|255)>>>0);});
+
+// ---------- utils ----------
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const ri=(a,b)=>Math.floor(a+Math.random()*(b-a+1));
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const ease=t=>t<=0?0:t>=1?1:t*t*(3-2*t);
+function hash(x,y){let h=(Math.imul(x|0,374761393)+Math.imul(y|0,668265263))|0;h=Math.imul(h^(h>>>13),1274126177);return ((h^(h>>>16))>>>0)/4294967296;}
+function angDiff(a,b){let d=(a-b)%TAU;if(d>Math.PI)d-=TAU;if(d<-Math.PI)d+=TAU;return d;}
+function sampleR(R,a){a=((a%TAU)+TAU)%TAU;const fi=a/TAU*N,i0=fi|0,f=fi-i0;return R[i0%N]*(1-f)+R[(i0+1)%N]*f;}
+const ANG=i=>i/N*TAU;
+const COS=new Float32Array(N),SIN=new Float32Array(N);for(let i=0;i<N;i++){COS[i]=Math.cos(ANG(i));SIN[i]=Math.sin(ANG(i));}
+function area(R){let a=0;for(let i=0;i<N;i++)a+=R[i]*R[i];return a*0.5*TAU/N;}
+function extents(R){let a=1e9,b=-1e9,c=1e9,d=-1e9;for(let i=0;i<N;i++){const x=R[i]*COS[i],y=R[i]*SIN[i];if(x<a)a=x;if(x>b)b=x;if(y<c)c=y;if(y>d)d=y;}return{minX:a,maxX:b,minY:c,maxY:d};}
+
+// ---------- canvases ----------
+const cv=document.getElementById('c'),dctx=cv.getContext('2d');
+const buf=document.createElement('canvas'),g=buf.getContext('2d');
+const bgc=document.createElement('canvas'),bgx=bgc.getContext('2d');
+const lay=document.createElement('canvas'),lx=lay.getContext('2d');
+let W=200,H=300,P=2,DPR=1,L={},LT=null,layDirty=null,cssW=0,cssH=0;
+const sa={l:0,r:0,t:0,b:0};
+function rect(c,x,y,w,h,col){c.fillStyle=PAL[col];c.fillRect(Math.round(x),Math.round(y),w,h);}
+function spr(c,x,y,list,flip,noOut){x=Math.round(x);y=Math.round(y);
+  if(!noOut){c.fillStyle=PAL[INK];for(let k=0;k<list.length;k++){const r=list[k];if(r[5])continue;const rx=flip?-r[0]-r[2]:r[0];c.fillRect(x+rx-1,y+r[1]-1,r[2]+2,r[3]+2);}}
+  for(let k=0;k<list.length;k++){const r=list[k];const rx=flip?-r[0]-r[2]:r[0];c.fillStyle=PAL[r[4]];c.fillRect(x+rx,y+r[1],r[2],r[3]);}}
+function pline(c,x0,y0,x1,y1,col){x0=Math.round(x0);y0=Math.round(y0);x1=Math.round(x1);y1=Math.round(y1);c.fillStyle=PAL[col];
+  let dx=Math.abs(x1-x0),sx=x0<x1?1:-1,dy=-Math.abs(y1-y0),sy=y0<y1?1:-1,e=dx+dy,n=0;
+  while(n++<2000){c.fillRect(x0,y0,1,1);if(x0===x1&&y0===y1)break;const e2=2*e;if(e2>=dy){e+=dy;x0+=sx;}if(e2<=dx){e+=dx;y0+=sy;}}}
+function makeTarget(w,h){const img=new ImageData(Math.max(1,w),Math.max(1,h));return{w:img.width,h:img.height,img,u32:new Uint32Array(img.data.buffer),mask:new Uint8Array(img.width*img.height)};}
+
+// ================================================================
+//  SHAPE RENDERER (polar outline → square pixel steps, lip = thickness)
+// ================================================================
+function renderShape(T,o){
+  const R=o.R,s=o.s,sv=o.sv||o.s,mode=o.mode||'pizza';
+  let mr=0;for(let i=0;i<N;i++)if(R[i]>mr)mr=R[i];
+  const rx=Math.ceil(mr*s)+1,ry=Math.ceil(mr*sv)+1;
+  const cx=Math.round(o.cx),cy=Math.round(o.cy),lip=o.lip|0;
+  const cut=o.cut,sep=o.sep||0;let so=0;
+  if(cut&&sep>0){for(const f of cut.off){so=Math.max(so,Math.abs(f[0])*sep+1,Math.abs(f[1])*sep+1);}so=Math.ceil(so);}
+  let X0=Math.max(0,cx-rx-so-2),X1=Math.min(T.w-1,cx+rx+so+2),Y0=Math.max(0,cy-ry-so-2),Y1=Math.min(T.h-1,cy+ry+so+lip+2);
+  if(X1<X0||Y1<Y0)return null;
+  for(let y=Y0;y<=Y1;y++){const b=y*T.w;T.u32.fill(0,b+X0,b+X1+1);T.mask.fill(0,b+X0,b+X1+1);}
+  const rot=o.rot||0,cr=Math.cos(-rot),sr=Math.sin(-rot);
+  const kn=o.knead||0,rimW=o.rimW||1,seed=o.seed||0,dents=o.dents,hid=o.hidden;
+  const bake=o.bake||0,bakeFn=o.bakeFn,flourP=0.075*(1-kn);
+  const brownP=0.10+0.32*(1-kn);
+  const tw=T.w,u32=T.u32,mk=T.mask;
+  for(let sy=-ry;sy<=ry;sy++){
+    for(let sx=-rx;sx<=rx;sx++){
+      let qx=sx/s,qy=sy/sv;
+      if(rot){const t=qx*cr-qy*sr;qy=qx*sr+qy*cr;qx=t;}
+      const d=Math.sqrt(qx*qx+qy*qy);if(d>mr+0.5)continue;
+      let a=Math.atan2(qy,qx);if(a<0)a+=TAU;
+      const fi=a/TAU*N,i0=fi|0,f=fi-i0;const Rr=R[i0%N]*(1-f)+R[(i0+1)%N]*f;
+      if(d>Rr)continue;
+      let pc=0,ox=0,oy=0,xs=99;
+      if(cut){
+        if(cut.strip){const pr=qx*cut.c+qy*cut.s;const Pp=cut.P;let k=0;while(k<Pp.length&&Pp[k]<=pr)k++;pc=k;
+          if(k>0)xs=Math.min(xs,pr-Pp[k-1]);if(k<Pp.length)xs=Math.min(xs,Pp[k]-pr);}
+        else{const B=cut.B,n=B.length;if(n){let k=0;while(k<n&&B[k]<=a)k++;pc=k%n;
+          const b0=B[(pc-1+n)%n],b1=B[pc%n];xs=Math.min(Math.abs(d*Math.sin(a-b0)),Math.abs(d*Math.sin(a-b1)));}}
+        if(hid&&hid[pc])continue;
+        if(sep>0){const of=cut.off[pc]||[0,0];ox=Math.round(of[0]*sep);oy=Math.round(of[1]*sep);}
+      }
+      const X=cx+sx+ox,Y=cy+sy+oy;if(X<0||X>=tw||Y<0||Y>=T.h)continue;
+      const edge=(Rr-d)*s;const hx=Math.round(qx),hy=Math.round(qy);
+      const h1=hash(hx+seed,hy),h2=hash(hy*7+3,hx-seed);
+      let col,lc;
+      if(mode==='pizza'){
+        const b=bakeFn?bakeFn(X):bake;const baked=b>0&&h2<b*1.05;
+        lc=baked?BROWN:GOLD;
+        if(sep>0.3&&xs<1.3/s+0.2){col=baked?((kn>0.4&&h1<0.4)?GOLD:CREAM):DOUGH;}
+        else{
+          let dn=false;
+          if(dents){for(let k=0;k<dents.length;k++){const q=dents[k];const ex=qx-q.x,ey=qy-q.y;const rr=q.r*(q.life/q.ml);if(ex*ex+ey*ey<rr*rr){dn=(ex*ex+ey*ey<1.6)?2:1;break;}}}
+          if(dn){col=dn===2?GOLD:DOUGH;}
+          else if(!baked){
+            if(edge<rimW)col=DOUGH;
+            else if(h1<flourP)col=WHITE;
+            else if(kn>0.55&&qx<0&&qy<0&&edge>=rimW+1&&edge<rimW+2.2&&h1<0.7)col=WHITE;
+            else col=CREAM;
+          }else{
+            if(edge<rimW)col=(h1<brownP)?BROWN:GOLD;
+            else if(edge<rimW+1&&kn>0.5)col=(h1<0.5)?GOLD:CHEESE;
+            else if(h1<0.06)col=RED;else if(h1<0.11)col=CREAM;else if(h1<0.13&&kn<0.3)col=GOLD;else col=CHEESE;
+          }
+        }
+      }else if(mode==='box'){
+        lc=BROWN;
+        if(edge<1.6)col=GOLD;
+        else if(o.lid){const dd=Math.sqrt(sx*sx+sy*sy);
+          if(dd<2.6)col=RED;else if(edge<3.2)col=CREAM;else col=DOUGH;}
+        else col=(edge<3)?BROWN:DOUGH;
+      }else{ // icon
+        lc=GOLD;col=edge<1.2?GOLD:(h1<0.12?RED:CHEESE);
+      }
+      const idx=Y*tw+X;u32[idx]=P32[col];mk[idx]=2;
+      for(let k=1;k<=lip;k++){const Yk=Y+k;if(Yk>=T.h)break;const j=Yk*tw+X;if(mk[j]!==2){u32[j]=P32[lc];mk[j]=1;}}
+    }
+  }
+  const ink=P32[INK];
+  for(let y=Y0;y<=Y1;y++){for(let x=X0;x<=X1;x++){const j=y*tw+x;if(mk[j])continue;
+    const l=x>0?mk[j-1]:0,r=x<tw-1?mk[j+1]:0,u=y>0?mk[j-tw]:0,dd=y<T.h-1?mk[j+tw]:0;
+    if((l===1||l===2)||(r===1||r===2)||(u===1||u===2)||(dd===1||dd===2)){u32[j]=ink;mk[j]=3;}}}
+  return{x:X0,y:Y0,w:X1-X0+1,h:Y1-Y0+1};
+}
+function shapeCanvas(R,s,mode,opt){
+  opt=opt||{};let mr=0;for(let i=0;i<N;i++)if(R[i]>mr)mr=R[i];
+  const sv=opt.sv||s,lip=opt.lip==null?(mode==='box'?2:0):opt.lip;
+  const w=Math.ceil(mr*s)*2+8,h=Math.ceil(mr*sv)*2+8+lip;
+  const T=makeTarget(w,h);const cx=Math.floor(w/2),cy=Math.floor((h-lip)/2);
+  renderShape(T,Object.assign({R,s,sv,cx,cy,mode,lip},opt));
+  const c=document.createElement('canvas');c.width=T.w;c.height=T.h;c.getContext('2d').putImageData(T.img,0,0);
+  return{c,cx,cy,w:T.w,h:T.h};
+}
+function drawSC(sc,x,y,k){if(!sc)return;if(k==null||k===1){g.drawImage(sc.c,Math.round(x-sc.cx),Math.round(y-sc.cy));return;}
+  const w=Math.max(1,Math.round(sc.w*k)),h=Math.max(1,Math.round(sc.h*k));g.drawImage(sc.c,Math.round(x-sc.cx*k),Math.round(y-sc.cy*k),w,h);}
+
+// ================================================================
+//  SHAPE ANALYSIS (round / tail / long / star n)
+// ================================================================
+function analyze(R){
+  let m=0;for(let i=0;i<N;i++)m+=R[i];m/=N;
+  const S2=new Float32Array(N);for(let i=0;i<N;i++)S2[i]=(R[(i+N-1)%N]+2*R[i]+R[(i+1)%N])/4;
+  const pk=[];
+  for(let i=0;i<N;i++){const v=S2[i];if(v<m*1.13)continue;let ok=true,mn=1e9;
+    for(let j=-5;j<=5;j++){if(!j)continue;const w=S2[(i+j+N)%N];if(w>v||(w===v&&j<0)){ok=false;break;}}
+    if(!ok)continue;for(let j=-11;j<=11;j++){const w=S2[(i+j+N)%N];if(w<mn)mn=w;}
+    if(v-mn>m*0.16)pk.push(i);}
+  let best=0,bi=0,worst=1e9;for(let i=0;i<N/2;i++){const dd=R[i]+R[i+N/2];if(dd>best){best=dd;bi=i;}if(dd<worst)worst=dd;}
+  const aspect=best/Math.max(1,worst);const axis=ANG(bi);
+  let cls='round',n=pk.length;
+  if(n>=3)cls='star';
+  else if(n===2){const dA=Math.abs(angDiff(ANG(pk[0]),ANG(pk[1])));cls=(dA>2.1||aspect>1.7)?'long':'tail';}
+  else if(n===1)cls=aspect>2.4?'long':'tail';
+  else cls=aspect>1.7?'long':'round';
+  return{cls,n,peaks:pk.map(ANG),aspect,axis,mean:m};
+}
+const TPL={
+  round:()=>{const R=new Float32Array(N);R.fill(10);return R;},
+  star:n=>{const R=new Float32Array(N);for(let i=0;i<N;i++){const c=Math.cos(n*(ANG(i)+Math.PI/2));R[i]=8+6*Math.pow(Math.max(0,c),3);}return R;},
+  long:()=>{const R=new Float32Array(N);const a=17,b=6;for(let i=0;i<N;i++){R[i]=a*b/Math.sqrt(Math.pow(b*COS[i],2)+Math.pow(a*SIN[i],2));}return R;},
+  tail:()=>{const R=new Float32Array(N);for(let i=0;i<N;i++){const d=angDiff(ANG(i),0);R[i]=8+10*Math.exp(-d*d/(2*0.3*0.3));}return R;}
+};
+
+// ================================================================
+//  AUDIO (Web Audio synth, started on first touch)
+// ================================================================
+let AC=null,MG=null,NB=null,roar=null;
+function audioInit(){
+  if(!AC){try{const A=window.AudioContext||window.webkitAudioContext;if(!A)return;AC=new A();MG=AC.createGain();MG.gain.value=0.55;
+    const cp=AC.createDynamicsCompressor();MG.connect(cp);cp.connect(AC.destination);
+    NB=AC.createBuffer(1,AC.sampleRate,AC.sampleRate);const d=NB.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+    S.audio='created';}catch(e){AC=null;return;}}
+  if(AC.state==='suspended'){try{AC.resume().catch(()=>{});}catch(e){}}
+}
+function tone(f,dur,o){if(!AC)return;o=o||{};try{
+  const t0=AC.currentTime+(o.at||0);const os=AC.createOscillator();os.type=o.type||'sine';os.frequency.setValueAtTime(f,t0);
+  if(o.env){for(const e of o.env)os.frequency.linearRampToValueAtTime(e[1],t0+e[0]);}
+  else if(o.to)os.frequency.exponentialRampToValueAtTime(Math.max(20,o.to),t0+dur);
+  const ga=AC.createGain();const v=o.vol==null?0.2:o.vol;ga.gain.setValueAtTime(0.0001,t0);ga.gain.linearRampToValueAtTime(v,t0+(o.atk||0.006));
+  ga.gain.exponentialRampToValueAtTime(0.0001,t0+dur);let node=os;
+  if(o.lp){const fl=AC.createBiquadFilter();fl.type='lowpass';fl.frequency.value=o.lp;os.connect(fl);node=fl;}
+  node.connect(ga);ga.connect(MG);os.start(t0);os.stop(t0+dur+0.03);}catch(e){}}
+function noise(dur,o){if(!AC)return;o=o||{};try{
+  const t0=AC.currentTime+(o.at||0);const src=AC.createBufferSource();src.buffer=NB;
+  const fl=AC.createBiquadFilter();fl.type=o.ft||'bandpass';fl.frequency.setValueAtTime(o.f||1000,t0);fl.Q.value=o.q||1;
+  if(o.to)fl.frequency.exponentialRampToValueAtTime(o.to,t0+dur);
+  const ga=AC.createGain();const v=o.vol==null?0.15:o.vol;ga.gain.setValueAtTime(0.0001,t0);ga.gain.linearRampToValueAtTime(v,t0+0.005);ga.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+  src.connect(fl);fl.connect(ga);ga.connect(MG);src.start(t0,Math.random()*0.5);src.stop(t0+dur+0.03);}catch(e){}}
+function startRoar(){if(!AC||roar)return;try{const src=AC.createBufferSource();src.buffer=NB;src.loop=true;const fl=AC.createBiquadFilter();fl.type='lowpass';fl.frequency.value=320;
+  const ga=AC.createGain();ga.gain.setValueAtTime(0.0001,AC.currentTime);ga.gain.linearRampToValueAtTime(0.12,AC.currentTime+0.3);src.connect(fl);fl.connect(ga);ga.connect(MG);src.start();roar={src,ga};}catch(e){}}
+function stopRoar(){if(!roar||!AC)return;try{roar.ga.gain.linearRampToValueAtTime(0.0001,AC.currentTime+0.25);roar.src.stop(AC.currentTime+0.3);}catch(e){}roar=null;}
+const snd={
+  knead:k=>{const f=170+k*150+rnd(-15,15);tone(f*0.8,0.16,{type:'triangle',vol:0.28,env:[[0.03,f*1.25],[0.15,f*0.6]],lp:1200});tone(f*0.4,0.12,{vol:0.18,to:f*0.3});},
+  stretch:e=>{tone(260+e*7,0.06,{type:'triangle',vol:0.13,to:300+e*8});},
+  release:(k,e)=>{if(k>0.35){const f=220+k*120;tone(f,0.42,{type:'sine',vol:0.24,env:[[0.06,f*2.1],[0.14,f*0.9],[0.22,f*1.5],[0.3,f*1.05],[0.4,f*1.2]]});}
+    else{tone(150+e,0.25,{type:'triangle',vol:0.2,to:80,lp:700});}},
+  whoosh:()=>{noise(0.35,{f:400,to:2600,q:2,vol:0.22});tone(300,0.3,{vol:0.08,to:700});},
+  land:()=>{tone(130,0.18,{vol:0.3,to:55});noise(0.12,{ft:'lowpass',f:500,vol:0.2});},
+  plop:()=>{tone(620,0.08,{vol:0.2,to:300});noise(0.03,{f:3000,vol:0.06});},
+  tick:()=>{tone(880,0.04,{type:'square',vol:0.035});},
+  oven:()=>{noise(0.5,{f:300,to:1200,q:1.5,vol:0.18});tone(180,0.5,{type:'triangle',vol:0.12,to:380});},
+  ding:()=>{tone(1320,0.5,{vol:0.18});tone(1760,0.6,{vol:0.12,at:0.08});},
+  crack:()=>{noise(0.025,{ft:'highpass',f:2500+Math.random()*2500,vol:0.09});},
+  cut:()=>{noise(0.07,{ft:'highpass',f:3500,vol:0.18});tone(1300,0.06,{type:'square',vol:0.04,to:500});},
+  knock:th=>{tone(220-th*12,0.1,{vol:0.3,to:90});noise(0.04,{ft:'lowpass',f:900,vol:0.1});},
+  fold:()=>{tone(330,0.05,{type:'square',vol:0.06});tone(220,0.07,{type:'square',vol:0.06,at:0.06});noise(0.08,{f:1500,vol:0.08,at:0.04});},
+  fanfare:()=>{[523,659,784,1047].forEach((f,i)=>tone(f,0.16,{type:'square',vol:0.07,at:i*0.09}));tone(1568,0.35,{vol:0.1,at:0.38});},
+  happy:()=>{tone(660,0.09,{vol:0.13});tone(880,0.14,{vol:0.13,at:0.08});},
+  heart:()=>{tone(990,0.12,{vol:0.12,to:1480});},
+  count:i=>{tone(600+i*110,0.08,{type:'square',vol:0.06});},
+  wow:()=>{tone(280,0.5,{vol:0.16,to:950});tone(560,0.5,{vol:0.06,to:1900,type:'triangle'});},
+  morph:()=>{for(let i=0;i<10;i++)tone(i%2?160:220,0.04,{type:'square',vol:0.06,at:i*0.09});tone(300,1.0,{type:'triangle',vol:0.08,to:900,at:0.1});},
+  clack:()=>{tone(140,0.03,{type:'square',vol:0.04});},
+  drop:()=>{tone(300,0.15,{vol:0.22,to:110});tone(200,0.1,{vol:0.12,to:90,at:0.18});},
+  bite:()=>{noise(0.03,{f:2000,vol:0.06});},
+  pop:()=>{tone(500,0.07,{vol:0.12,to:900});},
+  giggle:()=>{tone(900,0.05,{vol:0.06});tone(1100,0.05,{vol:0.06,at:0.06});},
+  parasol:()=>{[392,523,659].forEach((f,i)=>tone(f,0.1,{type:'triangle',vol:0.1,at:i*0.07}));}
+};
+
+// ================================================================
+//  STATE
+// ================================================================
+const S={phase:'dough',t:0,dough:null,anim:null,cut:null,box:null,cbox:null,deliv:null,longMode:false,ovenM:0,outdoor:false,outdoorT:0,
+  people:[],queue:[],parts:[],orders:[null,null,null],shelf:[],seatOcc:new Array(10).fill(null),
+  chef:{hat:2,hatT:0,wide:0,happy:0,count:null,jump:0},clerk:{up:0,wave:0},
+  wob:{},lastInput:0,demo:null,demoShown:{},fly:[],carry:null,drag:null,cutFx:null,
+  disc:{},log:[],stats:{taps:0,pulls:0,flicks:0,bakes:0,cuts:0,served:0,pizzas:0,tops:0,maxParts:0},
+  saveState:'new',saveOK:null,passT:5,lastStarN:0,ids:1,audio:'none',hintBin:0,firstTapAt:-1,frames:0};
+function logE(s){S.log.push(Math.round(S.t*10)/10+':'+s);if(S.log.length>300)S.log.shift();}
+function disc(k,info){if(!S.disc[k]){S.disc[k]={t:Math.round(S.t*10)/10,info:info||''};logE('DISC '+k+' '+(info||''));}}
+
+// ---------- looks ----------
+function randLook(){return{skin:pick([SKIN,SKIN,DOUGH,GOLD]),hair:pick([BROWN,INK,CHEESE,GOLD,DRED]),st:ri(0,3),cap:pick([RED,SKY,GREEN,FIRE]),shirt:pick([RED,GREEN,SKY,CHEESE,FIRE,CREAM]),pants:pick([BROWN,DGREEN,DRED,WALL,SKY])};}
+function validLook(o){if(!o||typeof o!=='object')return null;const k=['skin','hair','st','cap','shirt','pants'];const r={};
+  for(const q of k){const v=o[q];if(!Number.isInteger(v)||v<0||v>15)return null;r[q]=v;}r.st=r.st%4;return r;}
+const CLERK={skin:SKIN,hair:BROWN,st:3,cap:RED,shirt:GREEN,pants:BROWN};
+
+// ================================================================
+//  LAYOUT
+// ================================================================
+function readSafe(){const el=document.getElementById('sa');const cs=getComputedStyle(el);
+  const f=v=>{const n=parseFloat(v);return isFinite(n)?n:0;};
+  sa.t=Math.ceil(f(cs.paddingTop)/P);sa.r=Math.ceil(f(cs.paddingRight)/P);sa.b=Math.ceil(f(cs.paddingBottom)/P);sa.l=Math.ceil(f(cs.paddingLeft)/P);}
+function computeLayout(){
+  const x0=sa.l,x1=W-sa.r,y0=sa.t,y1=H-sa.b,iw=x1-x0,ih=y1-y0;
+  const por=H>W*1.1;L={por,x0,x1,y0,y1,iw,ih};let y=y0;
+  if(por){
+    const topH=Math.max(32,Math.round(ih*0.10)),ovH=Math.max(46,Math.round(ih*0.135)),bH=Math.round(ih*0.37),gap=11,binH=Math.max(24,Math.round(ih*0.072));
+    const ww=Math.round(iw*0.6);
+    L.win={x:x0+2,y:y+2,w:ww-4,h:topH-4};L.shelf={x:x0+ww+1,y:y+2,w:iw-ww-3,h:topH-4};y+=topH;
+    L.ovRow={y,h:ovH};L.oven={x:Math.round(x0+iw/2),y:y+ovH-1};L.chef={x:x0+Math.round(iw*0.13),y:y+ovH-1};
+    L.clerk={x:x1-Math.round(iw*0.08),y:y+ovH-1};L.stack={x:x1-Math.round(iw*0.24),y:y+ovH-2};y+=ovH;
+    L.board={x:x0+1,y,w:iw-2,h:bH};y+=bH;L.handle={x:Math.round(x0+iw/2),y:y+Math.round(gap/2)};y+=gap;
+    L.binRow={y,h:binH};y+=binH;
+    const rest=H-y,dinH=Math.round((y1-y)*0.53);
+    L.din={x:0,y,w:W,h:dinH};L.wallH={y:y+dinH,h:3};L.street={x:0,y:y+dinH+3,w:W,h:H-(y+dinH+3)};
+    const st=L.street,sh=Math.max(20,y1-st.y);
+    const dX=x1-16;L.doorRect={x:dX-7,y:y+dinH,w:14,h:3,horiz:true};
+    L.doorIn={x:dX,y:y+dinH-2};L.doorOut={x:dX,y:st.y+12};
+    L.counter={x:x1-46,y:y+Math.round(dinH*0.34)};L.cspot={x:x1-46,y:y+dinH-4};
+    L.waitSpots=[];for(let i=0;i<14;i++){const x=x1-46-13*(i+1);if(x<x0+6)break;L.waitSpots.push({x,y:y+dinH-4});}
+    L.tablesIn=[{x:x0+24,y:y+Math.round(dinH*0.3)},{x:x0+Math.min(70,Math.round(iw*0.36)),y:y+Math.round(dinH*0.3)}];
+    L.seatY=y+Math.round(dinH*0.3)+9;
+    L.queueSpots=[];for(let i=0;i<16;i++){let x=dX-14-11*i;let yy=st.y+Math.min(20,sh-2);if(x<x0+6){x=x0+6+11*(i-Math.floor((dX-20-x0)/11));yy=st.y+Math.min(20,sh-2);}L.queueSpots.push({x,y:yy});}
+    L.tablesOut=[{x:x0+20,y:st.y+Math.min(sh-10,30)},{x:x0+Math.round(iw*0.32),y:st.y+Math.min(sh-10,30)},{x:x0+Math.round(iw*0.54),y:st.y+Math.min(sh-10,30)}];
+    L.seatOutY=st.y+Math.min(sh-1,39);
+    L.walkY=st.y+11;L.spawnR=x1+12;L.spawnL=x0-12;L.exitX=x1+12;L.dance={x:dX-22,y:st.y+13};
+  }else{
+    const topH=Math.round(ih*0.24),bH=Math.round(ih*0.42),gap=10,binH=Math.max(22,Math.round(ih*0.082));
+    L.win={x:x0+2,y:y+2,w:Math.round(iw*0.25),h:Math.max(26,topH-34)};
+    const shw=Math.round(iw*0.22);L.shelf={x:x1-shw-1,y:y+2,w:shw-2,h:Math.max(26,topH-34)};
+    L.ovRow={y,h:topH};L.oven={x:x0+Math.round(iw*0.47),y:y+topH-1};L.chef={x:x0+Math.round(iw*0.31),y:y+topH-1};
+    L.clerk={x:x0+Math.round(iw*0.63),y:y+topH-1};L.stack={x:x0+Math.round(iw*0.70),y:y+topH-2};y+=topH;
+    L.board={x:x0+1,y,w:iw-2,h:bH};y+=bH;L.handle={x:Math.round(x0+iw/2),y:y+Math.round(gap/2)};y+=gap;
+    L.binRow={y,h:binH};y+=binH;
+    const rh=Math.max(30,y1-y);const dw=Math.round(iw*0.55);const wx=x0+dw;
+    L.din={x:0,y,w:wx,h:H-y};L.wallV={x:wx,y,w:3,h:H-y};L.street={x:wx+3,y,w:W-wx-3,h:H-y};
+    const fy=y+rh-3;
+    L.doorRect={x:wx,y:fy-15,w:3,h:15,horiz:false};
+    L.doorIn={x:wx-7,y:fy};L.doorOut={x:wx+10,y:fy};
+    L.counter={x:wx-28,y:y+Math.round(rh*0.2)};L.cspot={x:wx-28,y:fy};
+    L.waitSpots=[];for(let i=0;i<14;i++){const x=wx-28-13*(i+1);if(x<x0+6)break;L.waitSpots.push({x,y:fy});}
+    L.tablesIn=[{x:x0+22,y:y+Math.round(rh*0.28)},{x:x0+62,y:y+Math.round(rh*0.28)},];
+    L.seatY=y+Math.round(rh*0.28)+9;
+    L.queueSpots=[];for(let i=0;i<16;i++){L.queueSpots.push({x:wx+16+11*i,y:y+Math.min(19,rh-6)});}
+    L.tablesOut=[{x:wx+30,y:y+rh-13},{x:wx+Math.round((x1-wx)*0.45),y:y+rh-13},{x:wx+Math.round((x1-wx)*0.75),y:y+rh-13}];
+    L.seatOutY=y+rh-4;
+    L.walkY=fy;L.spawnR=x1+12;L.spawnL=x1+12;L.exitX=x1+12;L.dance={x:wx+28,y:fy};
+  }
+  // seats
+  L.seats=[];
+  for(const t of L.tablesIn){L.seats.push({x:t.x-10,y:L.seatY,out:false,face:false});L.seats.push({x:t.x+10,y:L.seatY,out:false,face:true});}
+  for(const t of L.tablesOut){L.seats.push({x:t.x-10,y:L.seatOutY,out:true,face:false});L.seats.push({x:t.x+10,y:L.seatOutY,out:true,face:true});}
+  // bins
+  L.bins=[];const bw=Math.floor((L.iw-8)/4);
+  for(let k=0;k<4;k++){let bx=L.x0+4+k*bw+bw/2;if(Math.abs(bx-L.handle.x)<14)bx+=(bx<L.handle.x?-8:8);L.bins.push({x:Math.round(bx),y:L.binRow.y+Math.round(L.binRow.h/2)+1,w:Math.min(30,bw-4),h:L.binRow.h-4});}
+  // dough bounds
+  const b=L.board;L.dc={x:Math.round(b.x+b.w/2),y:Math.round(b.y+b.h/2)};
+  const l=L.dc.x-(b.x+3),r=(b.x+b.w-3)-L.dc.x,t=L.dc.y-(b.y+3),bt=(b.y+b.h-7)-L.dc.y;
+  L.bound=new Float32Array(N);
+  for(let i=0;i<N;i++){const c=COS[i],s=SIN[i];let m=1e9;if(c>1e-6)m=Math.min(m,r/c);if(c<-1e-6)m=Math.min(m,-l/c);if(s>1e-6)m=Math.min(m,bt/s);if(s<-1e-6)m=Math.min(m,-t/s);L.bound[i]=m;}
+  // conveyor band
+  L.conv={x0:L.x0+1,x1:L.x1-1,top:L.oven.y-30,bot:L.oven.y};
+  // shelf slots
+  L.slots=[];const sw=L.shelf.w/4,shh=L.shelf.h/2;
+  for(let r2=0;r2<2;r2++)for(let c=0;c<4;c++)L.slots.push({x:Math.round(L.shelf.x+sw*c+sw/2),y:Math.round(L.shelf.y+shh*(r2+1)-3),w:Math.floor(sw)-2,h:Math.floor(shh)-3});
+}
+
+function buildBg(){
+  bgc.width=W;bgc.height=H;const c=bgx;c.imageSmoothingEnabled=false;
+  rect(c,0,0,W,H,BG);
+  for(let y=2;y<H;y+=7){const o=((y/7)|0)%2?0:7;for(let x=o;x<W;x+=14)rect(c,x,y,4,1,WALL);}
+  // window (night outside)
+  const w=L.win;rect(c,w.x-1,w.y-1,w.w+2,w.h+2,INK);rect(c,w.x,w.y,w.w,w.h,CREAM);rect(c,w.x+2,w.y+2,w.w-4,w.h-4,WALL);
+  for(let k=0;k<10;k++){rect(c,w.x+3+Math.floor(hash(k,3)*(w.w-6)),w.y+3+Math.floor(hash(k,9)*(w.h*0.4)),1,1,CHEESE);}
+  rect(c,w.x-2,w.y+w.h,w.w+4,2,GOLD);
+  // shelf
+  const sh=L.shelf;rect(c,sh.x-1,sh.y-1,sh.w+2,sh.h+2,INK);rect(c,sh.x,sh.y,sh.w,sh.h,BG);
+  for(let r=0;r<2;r++){const yy=Math.round(sh.y+sh.h/2*(r+1))-2;rect(c,sh.x,yy,sh.w,2,BROWN);rect(c,sh.x,yy,sh.w,1,GOLD);}
+  rect(c,sh.x,sh.y,1,sh.h,BROWN);rect(c,sh.x+sh.w-1,sh.y,1,sh.h,BROWN);
+  // board (work table)
+  const b=L.board;rect(c,b.x-1,b.y-1,b.w+2,b.h+4,INK);rect(c,b.x,b.y,b.w,b.h,BROWN);
+  for(let y=b.y+3;y<b.y+b.h-2;y+=6){for(let x=b.x+((y*7)%11);x<b.x+b.w-6;x+=13+((x+y)%5))rect(c,x,y,5,1,DRED);}
+  rect(c,b.x,b.y+b.h,b.w,2,DRED);
+  // bins shelf
+  rect(c,L.x0,L.binRow.y+L.binRow.h-3,L.iw,2,BROWN);
+  // dining floor
+  const d=L.din;
+  for(let y=d.y;y<d.y+d.h;y+=4)for(let x=d.x;x<d.x+d.w;x+=4)if((Math.floor((x-d.x)/4)+Math.floor((y-d.y)/4))%2===0)rect(c,x,y,4,4,WALL);
+  // street
+  const st=L.street;rect(c,st.x,st.y,st.w,st.h,BG);
+  for(let y=st.y+4;y<st.y+st.h;y+=8)rect(c,st.x,y,st.w,1,WALL);
+  for(let x=st.x+6;x<st.x+st.w;x+=12)for(let y=st.y;y<st.y+st.h;y+=8)rect(c,x,y,1,4,WALL);
+  // walls
+  if(L.wallH){rect(c,0,L.wallH.y-1,W,L.wallH.h+2,INK);rect(c,0,L.wallH.y,W,L.wallH.h,RED);for(let x=2;x<W;x+=6)rect(c,x,L.wallH.y+1,1,1,DRED);}
+  if(L.wallV){const v=L.wallV;rect(c,v.x-1,v.y,v.w+2,v.h,INK);rect(c,v.x,v.y,v.w,v.h,RED);for(let y=v.y+2;y<v.y+v.h;y+=5)rect(c,v.x+1,y,1,1,DRED);}
+  // door gap
+  const dr=L.doorRect;rect(c,dr.x-1,dr.y-1,dr.w+2,dr.h+2,INK);
+  // tables in
+  for(const t of L.tablesIn)drawTable(c,t.x,t.y,false);
+  // counter
+  const ct=L.counter;rect(c,ct.x-15,ct.y-1,30,8,INK);rect(c,ct.x-14,ct.y,28,6,BROWN);rect(c,ct.x-14,ct.y,28,1,GOLD);rect(c,ct.x-12,ct.y+6,2,6,BROWN);rect(c,ct.x+10,ct.y+6,2,6,BROWN);
+  // street lamp
+  const lx2=L.por?L.x0+4:L.x1-6,ly=L.street.y;rect(c,lx2,ly+2,1,Math.max(6,L.street.h-6),WALL);
+}
+function drawTable(c,x,y,out){rect(c,x-8,y-1,16,5,INK);rect(c,x-7,y,14,3,out?CREAM:BROWN);rect(c,x-7,y,14,1,out?WHITE:GOLD);rect(c,x-1,y+3,2,6,BROWN);rect(c,x-4,y+8,8,1,BROWN);}
+
+// ================================================================
+//  RESIZE
+// ================================================================
+function resize(){
+  const prevPhase=S.phase;
+  cssW=Math.max(1,window.innerWidth);cssH=Math.max(1,window.innerHeight);
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  P=Math.max(2,Math.floor(Math.min(cssW,cssH)/240));
+  W=Math.ceil(cssW/P);H=Math.ceil(cssH/P);
+  cv.width=Math.round(cssW*DPR);cv.height=Math.round(cssH*DPR);cv.style.width=cssW+'px';cv.style.height=cssH+'px';
+  buf.width=W;buf.height=H;lay.width=W;lay.height=H;LT=makeTarget(W,H);layDirty=null;
+  readSafe();computeLayout();buildBg();
+  g.imageSmoothingEnabled=false;dctx.imageSmoothingEnabled=false;
+  // re-place people by goals
+  for(const p of S.people){p.path=[];const q=goalPos(p.goal);if(q){p.x=q.x;p.y=q.y;p.out=q.out;}}
+  for(const o of S.orders)if(o)o.icon=null;
+  if(S.box)S.box.needRebuild=true;
+  if(S.cbox)S.cbox.needRebuild=true;
+  for(const e of S.shelf)e.mini=null;
+  S.lastResize=S.t;S.layoutCount=(S.layoutCount||0)+1;
+  if(S.dough)S.dough.forceRender=true;
+}
+
+// ================================================================
+//  DOUGH
+// ================================================================
+function baseR(){const b=L.board;return clamp(Math.round(Math.min(b.w,b.h)*0.25),22,42);}
+function newDough(fromR){
+  const r0=baseR(),seed=ri(1,9999);
+  const d={r:new Float32Array(N),off:new Float32Array(N),vo:new Float32Array(N),cur:new Float32Array(N),lump:new Float32Array(N),dragE:new Float32Array(N),
+    knead:0,V:Math.PI*r0*r0*4,tops:[],dents:[],sq:0,sqV:0,air:0,rot:0,spin:null,bake:0,seed,pulls:0,from:null,cut:null,sep:0,hidden:null,baked:false,id:S.ids++,r0};
+  for(let i=0;i<N;i++){d.r[i]=fromR?fromR[i]:r0;d.lump[i]=(hash(i,seed)-0.5)*2.2+(hash(i>>2,seed+1)-0.5)*1.8;}
+  return d;
+}
+function thick(d){return clamp(d.V/area(d.r),0.8,8);}
+function lipH(d){return clamp(Math.round(thick(d)*0.55+d.knead*1.6+(d.baked?d.knead*1.2:0)),1,5);}
+function rimW(d){return 1+Math.round(d.knead*2.4*clamp(thick(d)/2.5,0.5,1.2))+(d.baked&&d.knead>0.5?1:0);}
+function dScale(d){let m=1;for(let i=0;i<N;i++){const need=d.r[i]+1;if(need*m>L.bound[i]-1)m=(L.bound[i]-1)/need;}return clamp(m,0.2,1);}
+function sigma(){return 0.33;}
+function doughCur(d){
+  const dsc=dScale(d),kn=d.knead,dr=S.drag,dm=S.demo;
+  for(let i=0;i<N;i++){
+    let e=0;
+    if(dr){const w=Math.exp(-Math.pow(angDiff(ANG(i),dr.a),2)/(2*sigma()*sigma()));e=dr.ext*w;
+      const mx=L.bound[i]/dsc-2-d.r[i];if(e>mx)e=Math.max(0,mx);if(e<-(d.r[i]-8))e=-(d.r[i]-8);d.dragE[i]=e;}
+    let x=0;
+    if(dm&&dm.k==='edge'&&dm.ext){const w=Math.exp(-Math.pow(angDiff(ANG(i),dm.a),2)/(2*0.33*0.33));x+=dm.ext*w;}
+    if(S.hintBump&&S.hintBump.on){const w=Math.exp(-Math.pow(angDiff(ANG(i),S.hintBump.a),2)/(2*0.25*0.25));x+=S.hintBump.v*w;}
+    let v=d.r[i]+d.off[i]+e+x+d.lump[i]*(1-kn)*(d.r0/30);
+    const mx2=L.bound[i]/dsc-1;if(v>mx2)v=mx2;if(v<3)v=3;d.cur[i]=v;
+  }
+}
+// view of the pizza for current phase
+function boardView(d){const s=dScale(d);let sq=d.sq||0;return{cx:L.dc.x,cy:L.dc.y-Math.round(d.air||0),s:s*(1+0.07*sq),sv:s*(1-0.07*sq),rot:d.rot||0};}
+function ovenView(d){
+  const ex=extents(d.r);
+  if(S.longMode){const C=L.conv;const iw=C.x1-C.x0-8,ih=C.bot-C.top-13;const s=Math.min(1,iw/(ex.maxX-ex.minX+2));const sv=Math.min(s,ih/(ex.maxY-ex.minY+2));
+    const cx=(C.x0+C.x1)/2-(ex.minX+ex.maxX)/2*s,cy=(C.top+6+C.bot-5)/2-(ex.minY+ex.maxY)/2*sv;return{cx,cy,s,sv,rot:0};}
+  const m=Math.max(ex.maxX-ex.minX,ex.maxY-ex.minY)/2;const s=Math.min(0.5,10/m);const sv=s*0.6;
+  return{cx:L.oven.x-(ex.minX+ex.maxX)/2*s,cy:L.oven.y-13-(ex.minY+ex.maxY)/2*sv,s,sv,rot:0};
+}
+function doughView(){
+  const d=S.dough;if(!d)return null;const ph=S.phase,A=S.anim;
+  if(ph==='toOven'||ph==='fromOven'){let t=ease(A.t/A.dur);if(ph==='fromOven')t=1-t;const a=boardView(d),b=ovenView(d);
+    return{cx:lerp(a.cx,b.cx,t),cy:lerp(a.cy,b.cy,t)-Math.sin(Math.PI*t)*10,s:lerp(a.s,b.s,t),sv:lerp(a.sv,b.sv,t),rot:0};}
+  if(ph==='bake')return ovenView(d);
+  if(ph==='newDough'){const v=boardView(d);const t=A.t/A.dur;let dy;if(t<0.55){const u=t/0.55;dy=-(1-u*u)*80;}else{const u=(t-0.55)/0.45;dy=-Math.sin(Math.PI*u)*10*(1-u);}v.cy+=Math.round(dy);return v;}
+  return boardView(d);
+}
+function toShape(v,x,y){let qx=(x-v.cx)/v.s,qy=(y-v.cy)/v.sv;if(v.rot){const c=Math.cos(-v.rot),s=Math.sin(-v.rot);const t=qx*c-qy*s;qy=qx*s+qy*c;qx=t;}return{qx,qy,d:Math.hypot(qx,qy),a:(Math.atan2(qy,qx)+TAU)%TAU};}
+function fromShape(v,a,rr){const aa=a+(v.rot||0);return{x:v.cx+Math.cos(aa)*rr*v.s,y:v.cy+Math.sin(aa)*rr*v.sv};}
+function pieceOfShape(cut,qx,qy){if(!cut)return 0;if(cut.strip){const pr=qx*cut.c+qy*cut.s;let k=0;while(k<cut.P.length&&cut.P[k]<=pr)k++;return k;}
+  const B=cut.B,n=B.length;if(!n)return 0;let a=Math.atan2(qy,qx);if(a<0)a+=TAU;let k=0;while(k<n&&B[k]<=a)k++;return k%n;}
+function topPos(d,v,tp){const rr=sampleR(d.cur,tp.a)*tp.u;const p=fromShape(v,tp.a,rr);
+  if(d.cut&&d.sep>0){const pc=pieceOfShape(d.cut,Math.cos(tp.a)*rr,Math.sin(tp.a)*rr);const of=d.cut.off[pc]||[0,0];p.x+=Math.round(of[0]*d.sep);p.y+=Math.round(of[1]*d.sep);p.pc=pc;}
+  return p;}
+
+function hitDough(x,y){
+  const d=S.dough;if(!d)return null;const v=doughView();const q=toShape(v,x,y);
+  const R=sampleR(d.cur,q.a);const dd=Math.hypot(x-v.cx,y-v.cy);const Rd=R*Math.hypot(Math.cos(q.a)*v.s,Math.sin(q.a)*v.sv);
+  const b=L.board;const inBoard=x>=b.x-2&&x<=b.x+b.w+2&&y>=b.y-2&&y<=b.y+b.h+3;
+  const inner=Math.max(Rd*0.45,Rd-10);
+  if(dd<inner)return{k:'in',q,v};
+  if(dd<=Rd+22&&inBoard)return{k:'edge',q,v,Rd,dd};
+  return null;
+}
+
+// ================================================================
+//  ORDERS & SHELF
+// ================================================================
+function makeOrder(kind,useHist){
+  if(useHist&&S.shelf.length&&Math.random()<0.5){const e=pick(S.shelf);return{R:e.r,an:e.an,look:(e.look&&Math.random()<0.6)?e.look:randLook(),hist:true,pop:0,icon:null};}
+  if(!kind)kind=pick(['round','star5','long','star3','tail','star4','star6']);
+  let R;if(kind==='round')R=TPL.round();else if(kind==='long')R=TPL.long();else if(kind==='tail')R=TPL.tail();else R=TPL.star(+kind.slice(4));
+  return{R,an:analyze(R),look:randLook(),hist:false,pop:0,icon:null,kind};
+}
+function initOrders(){S.orders=[makeOrder('round'),makeOrder('star5'),makeOrder('long')];
+  // 毎回少し変える: shuffle order positions
+  S.orders.sort(()=>Math.random()-0.5);}
+function refreshOrders(){
+  for(let k=0;k<3;k++)if(!S.orders[k]||S.orders[k].gone)S.orders[k]=makeOrder(null,true);
+  if(Math.random()<0.6){const k=ri(0,2);S.orders[k]=makeOrder(null,true);}
+}
+function orderIcon(o){if(!o.icon){const ex=extents(o.R);const s=Math.min(6.5/Math.max(-ex.minX,ex.maxX),4.5/Math.max(-ex.minY,ex.maxY));o.icon=shapeCanvas(o.R,s,'icon',{lip:0});}return o.icon;}
+function shelfMini(e){if(!e.mini){const sl=L.slots[0];const Rb=boxR(e.r);const ex=extents(Rb);
+  const s=Math.min((sl.w/2-1)/Math.max(-ex.minX,ex.maxX),(sl.h/2-1.5)/Math.max(-ex.minY,ex.maxY));e.mini=shapeCanvas(Rb,s,'box',{lid:true,lip:1});}return e.mini;}
+function boxR(R){const Rb=new Float32Array(N);for(let i=0;i<N;i++)Rb[i]=R[i]*1.04+3;return Rb;}
+const SKEY='gf261104-4-dotpizza-v1';
+function loadSave(){
+  try{const raw=window.localStorage.getItem(SKEY);if(!raw){S.saveState='new';return;}
+    const o=JSON.parse(raw);if(!o||o.v!==1||!Array.isArray(o.shelf))throw new Error('bad');
+    const out=[];for(const e of o.shelf.slice(-8)){if(!e||!Array.isArray(e.r)||e.r.length!==N)continue;const r=new Float32Array(N);let ok=true;
+      for(let i=0;i<N;i++){const v=+e.r[i];if(!isFinite(v)||v<4||v>700){ok=false;break;}r[i]=v;}if(!ok)continue;
+      out.push({id:S.ids++,r,an:analyze(r),look:validLook(e.lk),mini:null,arrive:true});}
+    S.shelf=out;S.saveState=out.length?'restored':'empty';
+  }catch(e){S.shelf=[];S.saveState='broken';}
+}
+function save(){try{window.localStorage.setItem(SKEY,JSON.stringify({v:1,shelf:S.shelf.filter(e=>e.arrive).map(e=>({r:Array.from(e.r,v=>Math.round(v*2)/2),lk:e.look||null}))}));S.saveOK=true;}catch(e){S.saveOK=false;}}
+
+// ================================================================
+//  PARTICLES
+// ================================================================
+const PMAX=160;
+function part(x,y,vx,vy,c,life,k,gr){if(S.parts.length>=PMAX)S.parts.shift();S.parts.push({x,y,vx,vy,c,l:life,ml:life,k:k||'p',g:gr==null?60:gr});}
+function flour(x,y,n,sp){for(let i=0;i<n;i++){const a=rnd(0,TAU),v=rnd(10,sp||40);part(x,y,Math.cos(a)*v,Math.sin(a)*v-15,Math.random()<0.6?WHITE:CREAM,rnd(0.3,0.7),'p',70);}}
+function sparkle(x,y,n){for(let i=0;i<n;i++){const a=rnd(0,TAU),v=rnd(8,30);part(x,y,Math.cos(a)*v,Math.sin(a)*v,Math.random()<0.5?CHEESE:WHITE,rnd(0.4,0.8),'s',0);}}
+function heart(x,y){part(x,y,rnd(-6,6),-18,RED,1.0,'h',0);}
+function smoke(x,y){part(x,y,rnd(-3,3),-10,Math.random()<0.5?WALL:CREAM,rnd(0.8,1.4),'m',-2);}
+
+// ================================================================
+//  PEOPLE
+// ================================================================
+function addPerson(look,x,y,out,goal,state){const p={id:S.ids++,look,x,y,out,path:[],goal:null,state:state||'idle',t:0,wt:0,face:false,item:null,hop:0,sp:null,seat:-1,sitT:0,bites:0,dead:false,speed:rnd(46,58)};
+  S.people.push(p);if(goal)setGoal(p,goal);return p;}
+function goalPos(gl){if(!gl)return null;
+  switch(gl.k){
+    case 'wait':{if(gl.i<L.waitSpots.length){const s=L.waitSpots[gl.i];return{x:s.x,y:s.y,out:false};}const s=L.queueSpots[Math.min(L.queueSpots.length-1,gl.i-L.waitSpots.length)];return{x:s.x,y:s.y,out:true};}
+    case 'queue':{const s=L.queueSpots[Math.min(L.queueSpots.length-1,gl.i)];return{x:s.x,y:s.y,out:true};}
+    case 'counter':return{x:L.cspot.x,y:L.cspot.y,out:false};
+    case 'seat':{const s=L.seats[gl.i];return{x:s.x,y:s.y,out:s.out};}
+    case 'exit':return{x:gl.left?L.spawnL:L.exitX,y:L.walkY,out:true};
+    case 'street':return{x:clamp(L.dance.x+(gl.dx||0),L.street.x+6,L.x1-6),y:L.dance.y,out:true};
+    case 'pass':return{x:gl.x,y:L.walkY+(gl.dy||0),out:true};
+  }return null;}
+function setGoal(p,gl){p.goal=gl;const q=goalPos(gl);if(!q)return;
+  if(p.out===q.out)p.path=[q];else if(p.out)p.path=[{x:L.doorOut.x,y:L.doorOut.y,out:true},{x:L.doorIn.x,y:L.doorIn.y,out:false},q];
+  else p.path=[{x:L.doorIn.x,y:L.doorIn.y,out:false},{x:L.doorOut.x,y:L.doorOut.y,out:true},q];}
+function leave(p,state){p.state=state||'leave';p.t=0;if(p.seat>=0&&S.seatOcc[p.seat]===p)S.seatOcc[p.seat]=null;p.seat=-1;if(p.state==='leave')setGoal(p,{k:'exit',left:Math.random()<0.3&&L.por});}
+function assignSeat(p,preferOut){
+  if(preferOut&&!S.outdoor){S.outdoor=true;S.outdoorT=0;snd.parasol();logE('outdoor diner opened');disc('d6b','outdoor diner');}
+  const ord=preferOut?[4,5,6,7,8,9,0,1,2,3]:[0,1,2,3,4,5,6,7,8,9];
+  for(const i of ord){if(i>=4&&!S.outdoor)continue;if(!S.seatOcc[i]){S.seatOcc[i]=p;return i;}}
+  let best=null,bi=-1;for(const i of ord){if(i>=4&&!S.outdoor)continue;const q=S.seatOcc[i];if(q&&q.state==='sit'&&(!best||q.sitT>best.sitT)){best=q;bi=i;}}
+  if(best){best.state='yield';best.t=0;best.seat=-1;best.face=p.x<best.x;heart(best.x,best.y-22);S.seatOcc[bi]=p;logE('seat yielded');disc('yield','席を譲る');return bi;}
+  return -1;}
+function updPeople(dt){
+  for(const p of S.people){
+    p.hop=Math.max(0,p.hop-dt);p.t+=dt;
+    if(p.path.length){const w=p.path[0];const dx=w.x-p.x,dy=w.y-p.y,dd=Math.hypot(dx,dy),st=p.speed*dt;
+      if(Math.abs(dx)>0.5)p.face=dx<0;
+      if(dd<=st){p.x=w.x;p.y=w.y;p.out=w.out;p.path.shift();}else{p.x+=dx/dd*st;p.y+=dy/dd*st;}p.wt+=dt;
+      if(p.path.length)continue;}
+    // arrived
+    switch(p.state){
+      case 'toCounter':p.state='atCounter';p.face=false;break;
+      case 'dance':if(p.t>1.5){leave(p);}break;
+      case 'takeout':p.state='dance';p.t=0.4;break;
+      case 'toSeat':p.state='sit';p.sitT=0;p.face=L.seats[p.seat]?L.seats[p.seat].face:false;break;
+      case 'sit':p.sitT+=dt;if(p.item&&p.bites<3&&p.sitT>1.4+p.bites*1.6){p.bites++;snd.bite();if(Math.random()<0.5)part(p.x+(p.face?-3:3),p.y-14,rnd(-5,5),-5,GOLD,0.4,'p',40);}
+        if(p.sitT>11)leave(p);break;
+      case 'yield':if(p.t>0.9)leave(p);break;
+      case 'cheer':if(p.t>1.0)leave(p);break;
+      case 'leave':case 'pass':p.dead=true;break;
+    }
+  }
+  for(let i=S.people.length-1;i>=0;i--){const p=S.people[i];if(p.dead){if(p.seat>=0&&S.seatOcc[p.seat]===p)S.seatOcc[p.seat]=null;S.people.splice(i,1);const qi=S.queue.indexOf(p);if(qi>=0)S.queue.splice(qi,1);}}
+  // passers-by
+  S.passT-=dt;if(S.passT<=0){S.passT=rnd(7,13);if(S.people.length<22){const fromL=L.por?Math.random()<0.5:false;const p=addPerson(randLook(),fromL?L.spawnL:L.spawnR,L.walkY+ri(-1,3),true,null,'pass');
+    setGoal(p,{k:'pass',x:fromL?L.spawnR:(L.por?L.spawnL:L.street.x-14),dy:ri(-1,3)});if(!L.por){p.path=[{x:L.street.x+4,y:p.y,out:true}];p.state='pass';}}}
+}
+
+// ================================================================
+//  INPUT
+// ================================================================
+let act=null;
+function toLog(e){return{x:e.clientX/P,y:e.clientY/P};}
+function wob(k){S.wob[k]=0.3;snd.tick();}
+function hitRect(x,y,r,pad){pad=pad||0;return x>=r.x-pad&&x<=r.x+r.w+pad&&y>=r.y-pad&&y<=r.y+r.h+pad;}
+function hitObj(x,y){
+  if(hitRect(x,y,{x:L.handle.x-15,y:L.handle.y-9,w:30,h:18}))return{k:'handle'};
+  for(let i=0;i<4;i++){const b=L.bins[i];if(hitRect(x,y,{x:b.x-b.w/2,y:b.y-b.h/2-6,w:b.w,h:b.h+6},3))return{k:'bin',i};}
+  for(let i=0;i<L.slots.length;i++){const s=L.slots[i];if(hitRect(x,y,{x:s.x-s.w/2,y:s.y-s.h,w:s.w,h:s.h+2},1))return{k:'shelf',i};}
+  if(hitRect(x,y,{x:L.stack.x-12,y:L.stack.y-16,w:24,h:18},4))return{k:'stack'};
+  if(hitRect(x,y,{x:L.clerk.x-7,y:L.clerk.y-20,w:14,h:21},2))return{k:'clerk'};
+  if(hitRect(x,y,{x:L.chef.x-8,y:L.chef.y-36,w:16,h:37},2))return{k:'chef'};
+  if(S.ovenM>0.5){if(x>=L.conv.x0&&x<=L.conv.x1&&y>=L.conv.top&&y<=L.conv.bot)return{k:'oven'};}
+  else if(hitRect(x,y,{x:L.oven.x-29,y:L.oven.y-46,w:58,h:46}))return{k:'oven'};
+  if(hitRect(x,y,L.win))return{k:'win'};
+  for(const p of S.people){if(Math.abs(x-p.x)<7&&y<p.y+2&&y>p.y-20)return{k:'person',p};}
+  if(hitRect(x,y,{x:L.counter.x-15,y:L.counter.y-12,w:30,h:24}))return{k:'counter'};
+  return null;
+}
+function onDown(x,y){
+  const ph=S.phase,d=S.dough;
+  if(ph==='dough'&&d&&!d.spin){
+    const h=hitDough(x,y);
+    if(h&&h.k==='edge'){act.kind='edge';act.a=h.q.a;act.d0=h.dd;act.dir=Math.atan2(y-h.v.cy,x-h.v.cx);S.drag={a:h.q.a,ext:0,step:0};S.chef.look={x,y};
+      pressAt(x,y,true);return;}
+    if(h&&h.k==='in'){act.kind='knead';act.path=0;act.lx=x;act.ly=y;act.rub=0;pressAt(x,y,false);return;}
+  }
+  if(ph==='cut'&&d){const v=doughView();const q=toShape(v,x,y);if(q.d<=sampleR(d.cur,q.a)+8/v.s){act.kind='cut';act.done=false;return;}}
+  const o=hitObj(x,y);if(!o)return;
+  if(ph==='dough'){
+    if(o.k==='bin'){act.kind='bin';act.bin=o.i;act.moved=false;S.wob['bin'+o.i]=0.15;return;}
+    if(o.k==='handle'){act.kind='handle';return;}
+    if(o.k==='shelf'&&S.shelf[o.i]&&S.shelf[o.i].arrive){act.kind='shelf';act.slot=o.i;return;}
+  }
+  if(ph==='cut'&&(o.k==='stack'||o.k==='clerk')){act.kind='box';return;}
+  if(o.k==='person'){o.p.hop=0.35;snd.giggle();return;}
+  if(o.k==='bin'||o.k==='shelf')wob(o.k+(o.i||0));else wob(o.k);
+}
+function onMove(x,y){
+  const d=S.dough;if(!act)return;
+  if(act.kind==='edge'&&S.drag&&d){
+    const v=boardView(d);const dd=Math.hypot(x-v.cx,y-v.cy);const ang=Math.atan2((y-v.cy)/v.sv,(x-v.cx)/v.s);
+    S.drag.a=(ang+TAU)%TAU;let ext=(dd-act.d0)/v.s;ext=Math.round(ext/3)*3;
+    if(ext!==S.drag.ext){const st=Math.round(ext/3);if(st!==S.drag.step){S.drag.step=st;if(st>0)snd.stretch(ext);
+        if(Math.random()<0.6){const p=fromShape(v,S.drag.a,sampleR(d.cur,S.drag.a));flour(p.x,p.y,1,18);}}
+      S.drag.ext=ext;}
+    S.chef.look={x,y};
+  }else if(act.kind==='knead'&&d){
+    const m=Math.hypot(x-act.lx,y-act.ly);act.path+=m;act.rub+=m;act.lx=x;act.ly=y;
+    if(act.rub>6&&!(y-act.y0<-8&&S.t-act.t0<0.3)){act.rub=0;const v=boardView(d);const q=toShape(v,x,y);if(q.d<sampleR(d.cur,q.a)*0.95){
+      d.knead=Math.min(1,d.knead+0.03);d.dents.push({x:q.qx,y:q.qy,r:4,life:0.3,ml:0.3});if(d.dents.length>12)d.dents.shift();flour(x,y,2,20);snd.knead(d.knead);d.sq=0.5;S.stats.rubs=(S.stats.rubs||0)+1;}}
+  }else if(act.kind==='bin'){
+    if(!act.moved&&Math.hypot(x-act.x0,y-act.y0)>5){act.moved=true;S.carry={type:act.bin,x,y};}
+    if(S.carry){S.carry.x=x;S.carry.y=y;}
+  }else if(act.kind==='cut'&&!act.done){
+    if(Math.hypot(x-act.x0,y-act.y0)>=10){act.done=true;commitCut(act.x0,act.y0,x,y);}
+  }else if(act.kind==='handle'){
+    if(act.y0-y>10){act.kind='none';sendToOven();}
+  }
+}
+function onUp(cancel,x,y){
+  const d=S.dough;if(!act)return;const k=act.kind;
+  if(k==='edge')commitDrag();
+  else if(k==='knead'&&d&&!cancel){const dt=S.t-act.t0,dy=y-act.y0,dx=x-act.x0;
+    if(dt<0.4&&dy<-13&&Math.abs(dx)<Math.abs(dy)*0.9&&!d.spin)flick();}
+  else if(k==='bin'){
+    if(act.moved&&S.carry){if(!cancel)dropTop(S.carry.type,x,y);else S.fly.push({type:S.carry.type,fx:x,fy:y,tx:L.bins[S.carry.type].x,ty:L.bins[S.carry.type].y-4,t:0,dur:0.3,back:true});S.carry=null;}
+    else if(!cancel)autoTop(act.bin);}
+  else if(k==='handle'&&!cancel)sendToOven();
+  else if(k==='shelf'&&!cancel)loadShelf(act.slot);
+  else if(k==='cut'&&!cancel&&!act.done){if(Math.hypot(x-act.x0,y-act.y0)>=6)commitCut(act.x0,act.y0,x,y);else knock();}
+  else if(k==='box'&&!cancel)startBoxing();
+  S.carry=k==='bin'?null:S.carry;
+}
+function pressAt(x,y,edge){
+  const d=S.dough;const v=boardView(d);const q=toShape(v,x,y);
+  d.dents.push({x:q.qx,y:q.qy,r:edge?4:6,life:0.4,ml:0.4});if(d.dents.length>12)d.dents.shift();
+  if(!edge)d.knead=Math.min(1,d.knead+0.065);
+  d.sq=1;d.sqV=0;flour(x,y,edge?3:7);snd.knead(d.knead);
+  S.stats.taps++;if(S.firstTapAt<0){S.firstTapAt=S.t;logE('first dough tap');}
+  if(d.knead>=0.5&&!d.k50){d.k50=true;S.chef.happy=0.8;sparkle(L.chef.x,L.chef.y-30,4);}
+  if(d.knead>=1&&!d.k100){d.k100=true;S.chef.happy=1.0;sparkle(v.cx,v.cy,8);snd.happy();}
+}
+function commitDrag(){
+  const d=S.dough,dr=S.drag;S.drag=null;if(!d||!dr)return;
+  if(Math.abs(dr.ext)<2){return;}
+  doughCur(d);// refresh dragE (last ext)
+  const kn=d.knead,keep=0.86-0.2*kn;
+  // gap measurement for toppings
+  const before=d.tops.length>=2?nnList(d):null;
+  const e0=new Float32Array(N);
+  {const dsc=dScale(d);for(let i=0;i<N;i++){const w=Math.exp(-Math.pow(angDiff(ANG(i),dr.a),2)/(2*sigma()*sigma()));let e=dr.ext*w;const mx=L.bound[i]/dsc-2-d.r[i];if(e>mx)e=Math.max(0,mx);if(e<-(d.r[i]-8))e=-(d.r[i]-8);e0[i]=e;}}
+  for(let i=0;i<N;i++){const e=e0[i];d.r[i]=Math.max(6,d.r[i]+e*keep);d.off[i]+=e*(1-keep);d.vo[i]=-e*kn*1.5;}
+  d.pulls++;S.stats.pulls++;snd.release(kn,Math.abs(dr.ext));
+  logE('pull ext='+dr.ext+' knead='+kn.toFixed(2)+' keep='+keep.toFixed(2));
+  if(kn>0.5&&dr.ext>12)disc('d4a','こねた生地を引いた knead='+kn.toFixed(2));
+  if(kn<0.15&&dr.ext>12)disc('d4b','こねずに引いた');
+  if(before){doughCur(d);const after=nnList(d);let gi=-1,gr=0;for(let i=0;i<after.length;i++){const g2=after[i]-before[i];if(g2>gr){gr=g2;gi=i;}}
+    if(gi>=0&&gr>=4&&after[gi]>before[gi]*1.3){disc('d3','具の間隔 '+before[gi].toFixed(1)+'→'+after[gi].toFixed(1));d.gapCheck=d.tops.length;}}
+  afterShape();
+}
+function nnList(d){const v=boardView(d);const ps=d.tops.map(t=>topPos(d,v,t));const out=[];for(let i=0;i<ps.length;i++){let m=1e9;for(let j=0;j<ps.length;j++)if(i!==j)m=Math.min(m,Math.hypot(ps[i].x-ps[j].x,ps[i].y-ps[j].y));out.push(m);}return out;}
+function afterShape(){
+  const d=S.dough;const an=analyze(d.r);d.an=an;
+  const v=boardView(d);const ex=extents(d.r);const wpx=(ex.maxX-ex.minX)*v.s;
+  if(an.cls==='tail'){disc('d1','しっぽ');S.disc.tailSeen=true;}
+  if(S.disc.tailSeen&&an.cls!=='tail'&&S.disc.d1&&!S.disc.d1b){S.disc.d1b={t:S.t,info:'反対側も引いて '+an.cls};logE('DISC d1b '+an.cls);}
+  if(an.cls==='star'&&an.n!==S.lastStarN){S.chef.count={peaks:an.peaks.slice(),i:0,t:0};disc('d2a','星 '+an.n+'角');}
+  S.lastStarN=an.cls==='star'?an.n:0;
+  if(wpx>L.board.w*0.6){S.chef.wide=1.6;if(!d.wowed){d.wowed=true;snd.wow();}}
+  // long event: dough spans both ends of the shop
+  if(!S.longMode){const left=v.cx+ex.minX*v.s,right=v.cx+ex.maxX*v.s;
+    if(left<=L.board.x+10&&right>=L.board.x+L.board.w-10)startLongMode();}
+}
+function startLongMode(){
+  S.longMode=true;S.chef.wide=2.5;S.chef.jump=0.6;snd.morph();logE('LONG MODE: conveyor oven');disc('d6a','店の両端まで');
+  // queue outside the door
+  const n=Math.max(0,8-S.queue.length);
+  for(let i=0;i<n;i++){const p=addPerson(randLook(),(L.por?L.spawnL:L.spawnR)+(L.por?-1:1)*i*12,L.walkY,true,null,'queue');S.queue.push(p);}
+  S.queue.forEach((p,i)=>setGoal(p,{k:'queue',i}));
+}
+function flick(){
+  const d=S.dough;d.spin={t:0,dur:0.8,turns:1};d.knead=Math.min(1,d.knead+0.03);snd.whoosh();
+  S.chef.hat=(S.chef.hat>0?-ri(1,3):ri(1,3));S.chef.hatT=0.6;S.stats.flicks++;logE('flick');
+}
+function landSpin(){
+  const d=S.dough;d.spin=null;d.air=0;d.rot=0;let m=0;for(let i=0;i<N;i++)m+=d.r[i];m/=N;
+  const b=analyze(d.r);
+  for(let i=0;i<N;i++){d.r[i]=d.r[i]*0.62+m*0.38;d.off[i]=0;d.vo[i]=0;}
+  d.sq=1.2;d.sqV=0;const v=boardView(d);flour(v.cx,v.cy+10,10,50);snd.land();
+  const a=analyze(d.r);disc('d5','回して丸く '+b.cls+'('+b.n+')→'+a.cls+'('+a.n+')');
+  afterShape();
+}
+function dropTop(type,x,y){
+  const d=S.dough;const v=boardView(d);const q=toShape(v,x,y-5);const R=sampleR(d.cur,q.a);
+  if(q.d<=R*0.95&&d.tops.length<48){attachTop(type,q.a,Math.min(0.85,q.d/R));}
+  else S.fly.push({type,fx:x,fy:y-5,tx:L.bins[type].x,ty:L.bins[type].y-4,t:0,dur:0.3,back:true});
+}
+function attachTop(type,a,u){const d=S.dough;if(!d)return;d.tops.push({a,u,type});snd.plop();S.stats.tops++;const v=boardView(d);const p=topPos(d,v,d.tops[d.tops.length-1]);flour(p.x,p.y,2,14);
+  if(d.gapCheck&&d.tops.length>d.gapCheck){disc('d3b','あとから具で空白を埋める');}}
+function autoTop(bi){
+  const d=S.dough;if(!d||d.tops.length>=48){wob('bin'+bi);return;}
+  const v=boardView(d);const ps=d.tops.map(t=>topPos(d,v,t));let best=null,bs=-1;
+  for(let k=0;k<44;k++){const a=rnd(0,TAU),u=rnd(0.12,0.82);const p=fromShape(v,a,sampleR(d.cur,a)*u);let m=60;for(const q of ps)m=Math.min(m,Math.hypot(p.x-q.x,p.y-q.y));if(m>bs){bs=m;best={a,u,p};}}
+  const b=L.bins[bi];S.fly.push({type:bi,fx:b.x,fy:b.y-4,tx:best.p.x,ty:best.p.y,a:best.a,u:best.u,t:0,dur:0.35,doughId:d.id});
+}
+function loadShelf(i){
+  const e=S.shelf[i];const d=S.dough;if(!e||!d)return;
+  const nd=newDough(e.r);nd.from=e;S.dough=nd;nd.sq=1;S.chef.happy=0.8;snd.pop();snd.knead(0.2);
+  const v=boardView(nd);flour(v.cx,v.cy,10,40);sparkle(L.slots[i].x,L.slots[i].y-4,5);logE('shelf reload '+e.an.cls);disc('mem','棚から再登場 '+e.an.cls);
+  S.lastStarN=0;afterShape();
+}
+function sendToOven(){
+  const d=S.dough;if(!d||d.spin||S.phase!=='dough')return;
+  S.drag=null;d.off.fill(0);d.vo.fill(0);d.dents=[];d.sq=0;
+  S.phase='toOven';S.anim={t:0,dur:0.75};snd.oven();logE('to oven '+(S.longMode?'conveyor':'dome'));
+}
+// ---------- cutting ----------
+function setupCut(){
+  const d=S.dough;const an=analyze(d.r);const strip=S.longMode||an.cls==='long';
+  let mn=1e9,mx=-1e9;const c=Math.cos(an.axis),s=Math.sin(an.axis);for(let i=0;i<N;i++){const p=d.r[i]*(COS[i]*c+SIN[i]*s);if(p<mn)mn=p;if(p>mx)mx=p;}
+  S.cut={strip,an,phi:an.axis,lines:[],P:[],minP:mn,maxP:mx};d.sep=0;buildCut();
+}
+function buildCut(){
+  const C=S.cut,d=S.dough;
+  if(C.strip){const Pp=C.P.slice().sort((a,b)=>a-b);const n=Pp.length+1;const off=[];for(let j=0;j<n;j++){const k=(j-(n-1)/2)*1.6;off.push([Math.cos(C.phi)*k,Math.sin(C.phi)*k]);}
+    d.cut={strip:true,c:Math.cos(C.phi),s:Math.sin(C.phi),P:Pp,off};}
+  else{const B=[];for(const a of C.lines){B.push(a);B.push(a+Math.PI);}B.sort((a,b)=>a-b);const n=B.length;const off=[];
+    if(!n)off.push([0,0]);else for(let j=0;j<n;j++){const lo=j===0?B[n-1]-TAU:B[j-1],hi=B[j];const m=(lo+hi)/2;off.push([Math.cos(m)*1.8,Math.sin(m)*1.8]);}
+    d.cut={strip:false,B,off};}
+  C.pieces=pieceStats(d.r,d.cut);
+}
+function pieceStats(R,cut){
+  let mr=0;for(let i=0;i<N;i++)mr=Math.max(mr,R[i]);const n=cut.strip?cut.P.length+1:Math.max(1,cut.B.length);
+  const cnt=new Float64Array(n),sx=new Float64Array(n),sy=new Float64Array(n);let tot=0;const r=Math.ceil(mr);
+  for(let y=-r;y<=r;y++)for(let x=-r;x<=r;x++){const d=Math.hypot(x,y);if(d>mr)continue;const a=(Math.atan2(y,x)+TAU)%TAU;if(d>sampleR(R,a))continue;const pc=pieceOfShape(cut,x,y);cnt[pc]++;sx[pc]+=x;sy[pc]+=y;tot++;}
+  const out=[];for(let i=0;i<n;i++)out.push({i,frac:cnt[i]/Math.max(1,tot),x:cnt[i]?sx[i]/cnt[i]:0,y:cnt[i]?sy[i]/cnt[i]:0});
+  return out.filter(p=>p.frac>0.004);
+}
+function commitCut(x0,y0,x1,y1){
+  const C=S.cut,d=S.dough;if(!C||!d)return;const v=doughView();
+  if(C.strip){
+    if(C.P.length>=11){wob('pizza');return;}
+    const mx=((x0+x1)/2-v.cx)/v.s,my=((y0+y1)/2-v.cy)/v.sv;let p=Math.round((mx*Math.cos(C.phi)+my*Math.sin(C.phi))/2)*2;
+    p=clamp(p,C.minP+4,C.maxP-4);
+    for(const q of C.P)if(Math.abs(q-p)<4){ // shift to nearest free spot
+      let best=null;for(let k=1;k<40;k++){for(const sgn of[1,-1]){const c=p+sgn*k*2;if(c<C.minP+4||c>C.maxP-4)continue;if(C.P.every(z=>Math.abs(z-c)>=4)){best=c;break;}}if(best!=null)break;}
+      if(best==null){snd.tick();return;}p=best;break;}
+    C.P.push(p);
+    const c=Math.cos(C.phi),s=Math.sin(C.phi);S.cutFx={t:0,strip:true,p,c,s};
+  }else{
+    if(C.lines.length>=6){wob('pizza');return;}
+    let a=Math.atan2((y1-y0)/v.sv,(x1-x0)/v.s);a=((a%Math.PI)+Math.PI)%Math.PI;
+    let best=-1,bd=1e9;for(let k=0;k<12;k++){const c=k*Math.PI/12;if(C.lines.some(l=>Math.abs(l-c)<0.01))continue;let dd=Math.abs(a-c);dd=Math.min(dd,Math.PI-dd);if(dd<bd){bd=dd;best=c;}}
+    if(best<0)return;C.lines.push(best);S.cutFx={t:0,strip:false,a:best};
+  }
+  buildCut();d.sep=Math.max(0.25,d.sep*0.5);snd.cut();S.stats.cuts++;
+  const np=C.pieces.length;logE('cut -> pieces='+np);
+  if(np>=6)disc('d7a','小さく切る '+np+'切れ');
+  if(C.strip&&S.longMode)disc('d6c','長いピザを '+np+'本に切る');
+}
+function knock(){const d=S.dough;if(!d)return;d.sq=0.6;snd.knock(lipH(d));const v=doughView();flour(v.cx,v.cy,3,15);}
+// ---------- boxing ----------
+function startBoxing(){
+  const d=S.dough;if(!d||!S.cut||S.phase!=='cut')return;
+  S.phase='boxing';S.anim={t:0};const an=analyze(d.r);const v=doughView();
+  const Rb=boxR(d.r);
+  const e={id:S.ids++,r:Float32Array.from(d.r),an,look:null,mini:null,arrive:false};
+  S.shelf.push(e);while(S.shelf.length>8)S.shelf.shift();
+  S.box={Rb,an,v0:{cx:v.cx,cy:v.cy,s:v.s},entry:e,needRebuild:true};buildBoxCanvases();
+  S.clerk.up=0.8;snd.fold();S.stats.pizzas++;
+  logE('boxing cls='+an.cls+' n='+an.n+' pieces='+S.cut.pieces.length);
+  if(an.cls==='star')disc('d2','星型の箱 '+an.n+'角');
+  setupDeliver(an,S.cut.pieces,e);
+}
+function buildBoxCanvases(){
+  const B=S.box;if(!B)return;const d=S.dough;const s=d?dScale(d):B.v0.s;B.v0.s=s;B.v0.cx=L.dc.x;B.v0.cy=L.dc.y;
+  B.big=shapeCanvas(B.Rb,s,'box',{lid:true,lip:3});B.bigOpen=shapeCanvas(B.Rb,s,'box',{lid:false,lip:3});
+  const ex=extents(B.Rb);B.cs=Math.min(1,15/Math.max(-ex.minX,ex.maxX),10/Math.max(-ex.minY,ex.maxY));
+  B.cl=shapeCanvas(B.Rb,B.cs,'box',{lid:true,lip:2});B.op=shapeCanvas(B.Rb,B.cs,'box',{lid:false,lip:2});
+  B.needRebuild=false;
+}
+function setupDeliver(an,pieces,entry){
+  const D={pieces:pieces.slice(),idx:0,line:[],recv:null,whole:pieces.length===1,open:false,openT:0,done:false,doneT:0,an,entry,hidden:{},match:-1,started:false};
+  let mi=-1;for(let k=0;k<3;k++){const o=S.orders[k];if(o&&!o.gone&&o.an.cls===an.cls){mi=k;break;}}D.match=mi;
+  const specials=[];
+  if(mi>=0){specials.push({look:S.orders[mi].look,sp:'match'});S.orders[mi].gone=true;S.orders[mi].leaveT=0;logE('order matched '+an.cls);disc('order','絵注文と一致 '+an.cls);}
+  const fr=S.dough&&S.dough.from;
+  if(fr&&fr.look&&fr.an.cls===an.cls&&Math.random()<0.85){specials.push({look:fr.look,sp:'again'});logE('revisit customer');disc('revisit','同じ客が再訪');}
+  const n=Math.min(pieces.length,12);const sp=specials.slice(0,n);
+  if(S.longMode){
+    const newP=sp.map((o,i)=>{const p=addPerson(o.look,L.spawnR+i*12,L.walkY,true,null,'queue');p.sp=o.sp;return p;});
+    D.line=newP.concat(S.queue);S.queue=[];
+    let i=D.line.length;while(D.line.length<n){const p=addPerson(randLook(),(L.por?L.spawnL:L.spawnR)+(L.por?-1:1)*(i++)*12,L.walkY,true,null,'queue');D.line.push(p);}
+    D.line.forEach((p,i)=>{p.state='queue';setGoal(p,{k:'queue',i});});
+  }else{
+    for(let i=0;i<n;i++){const o=sp[i]||{look:randLook()};const p=addPerson(o.look,L.spawnR+i*13,L.walkY,true,null,'inLine');p.sp=o.sp||null;D.line.push(p);setGoal(p,{k:'wait',i});}
+  }
+  // with too many pieces than people (cap 12) give extras to last
+  if(pieces.length>n){D.pieces=D.pieces.slice(0,n);}
+  entry.look=D.line[0]?D.line[0].look:null;
+  S.deliv=D;
+}
+function renderCounter(){
+  const B=S.box,D=S.deliv,d=S.dough;if(!B||!D||!d)return;
+  const s=B.cs;const T=makeTarget(B.op.w+8,B.op.h+8);
+  const hid={};for(const k in D.hidden)hid[k]=true;
+  renderShape(T,{R:d.r,s,sv:s,cx:B.op.cx+4,cy:B.op.cy+4,mode:'pizza',lip:1,knead:d.knead,rimW:1,seed:d.seed,bake:1,cut:d.cut,sep:0.7,hidden:hid});
+  const c=document.createElement('canvas');c.width=T.w;c.height=T.h;c.getContext('2d').putImageData(T.img,0,0);
+  S.cbox={c,cx:B.op.cx+4,cy:B.op.cy+4,w:T.w,h:T.h};
+}
+function updDeliver(dt){
+  const D=S.deliv;if(!D||S.phase!=='deliver')return;
+  if(!D.whole&&!D.open){D.openT+=dt;if(D.openT>0.4){D.open=true;snd.pop();renderCounter();sparkle(L.counter.x,L.counter.y-4,5);}}
+  if(D.done){D.doneT+=dt;if(D.doneT>1.0)startNewDough();return;}
+  if(!D.recv&&D.line.length&&(D.whole||D.open)){const p=D.line.shift();D.recv=p;p.state='toCounter';setGoal(p,{k:'counter'});
+    D.line.forEach((q,i)=>setGoal(q,S.longMode?{k:'queue',i}:{k:'wait',i}));}
+  if(D.recv&&D.recv.state==='atCounter'){giveTo(D.recv);D.recv=null;
+    if(D.idx>=D.pieces.length){D.done=true;snd.fanfare();sparkle(L.counter.x,L.counter.y-6,10);S.cbox=null;S.clerk.wave=1.2;
+      for(const q of D.line){q.state='cheer';q.t=0;}D.line=[];logE('delivery done served='+S.stats.served);}}
+  if(D.recv&&D.recv.dead){D.recv=null;}
+}
+function giveTo(p){
+  const D=S.deliv,B=S.box;const pc=D.pieces[D.idx++];D.hidden[pc.i]=true;
+  const strip=S.cut&&S.cut.strip;
+  if(D.whole){p.item={k:'box',sc:B&&B.cl};p.state='dance';p.t=0;S.cbox=null;D.boxGone=true;logE('whole box -> hug dance');disc('hug','箱を抱えて踊る');}
+  else{renderCounter();const big=pc.frac>=0.2;p.item={k:strip?'strip':'slice',big};
+    if(big){p.state='takeout';setGoal(p,{k:'street',dx:rnd(-12,12)});S.stats.takeout=(S.stats.takeout||0)+1;logE('big piece takeout frac='+pc.frac.toFixed(2));disc('d7b','大きい切れは持ち帰り');}
+    else{const si=assignSeat(p,S.longMode);if(si>=0){p.seat=si;p.state='toSeat';setGoal(p,{k:'seat',i:si});S.stats.seated=(S.stats.seated||0)+1;
+        if(S.longMode)disc('d6d','屋外の食堂に着席');else disc('d7','小さな一切れで着席');}
+      else{p.state='takeout';setGoal(p,{k:'street',dx:rnd(-12,12)});}}}
+  snd.happy();S.stats.served++;p.hop=0.3;
+  if(p.sp){for(let i=0;i<3;i++)heart(p.x+rnd(-4,4),p.y-22);snd.heart();if(p.sp==='match'){sparkle(p.x,p.y-12,8);snd.fanfare();}}
+  if(S.dough&&S.dough.tops.length>8&&Math.random()<0.6)heart(p.x,p.y-22);
+}
+function startNewDough(){
+  S.phase='newDough';S.anim={t:0,dur:0.8};S.dough=newDough();S.cut=null;S.box=null;S.cbox=null;
+  if(S.deliv&&S.deliv.entry){S.deliv.entry.look=S.deliv.entry.look||null;}
+  S.deliv=null;
+  if(S.longMode){S.longMode=false;logE('conveyor returns to dome');}
+  refreshOrders();save();snd.drop();S.lastStarN=0;S.chef.happy=0.6;
+}
+
+// ================================================================
+//  UPDATE
+// ================================================================
+function update(dt){
+  S.t+=dt;const d=S.dough;
+  if(d){
+    const kn=d.knead,K=40+260*kn,C=12-5*kn;
+    for(let i=0;i<N;i++){const a=-K*d.off[i]-C*d.vo[i];d.vo[i]+=a*dt;d.off[i]+=d.vo[i]*dt;if(Math.abs(d.off[i])<0.03&&Math.abs(d.vo[i])<0.05){d.off[i]=0;d.vo[i]=0;}}
+    for(let k=d.dents.length-1;k>=0;k--){d.dents[k].life-=dt;if(d.dents[k].life<=0)d.dents.splice(k,1);}
+    const ks=160+120*kn,cs=12-6*kn;d.sqV+=(-ks*d.sq-cs*d.sqV)*dt;d.sq+=d.sqV*dt;if(Math.abs(d.sq)<0.01&&Math.abs(d.sqV)<0.05){d.sq=0;d.sqV=0;}
+    if(d.spin){d.spin.t+=dt;const p=d.spin.t/d.spin.dur;d.air=Math.sin(Math.PI*Math.min(1,p))*32;d.rot=ease(p)*TAU*d.spin.turns;if(Math.random()<0.4){const v=boardView(d);flour(v.cx+rnd(-10,10),v.cy+rnd(-5,5),1,10);}if(p>=1)landSpin();}
+  }
+  const A=S.anim;
+  switch(S.phase){
+    case 'toOven':A.t+=dt;if(A.t>=A.dur){S.phase='bake';S.anim={t:0,dur:S.longMode?3.8:2.8};startRoar();S.stats.bakes++;}break;
+    case 'bake':A.t+=dt;{const p=A.t/A.dur;d.bake=clamp(p/0.85,0,1);
+      if(Math.random()<dt*(10+d.tops.length*0.6))snd.crack();
+      if(S.longMode&&Math.floor(A.t*4)!==Math.floor((A.t-dt)*4))snd.clack();
+      if(Math.random()<dt*6){if(S.longMode)smoke(lerp(L.conv.x0,L.conv.x1,Math.random()),L.conv.top);else smoke(L.oven.x+12,L.oven.y-46);}
+      S.chef.hatT=Math.max(S.chef.hatT,0.3);
+      if(A.t>=A.dur){stopRoar();snd.ding();d.baked=true;d.bake=1;S.phase='fromOven';S.anim={t:0,dur:0.65};
+        const kn=d.knead;if(kn>0.6)disc('d4c','こねた生地を焼いた(厚い縁)');if(kn<0.15)disc('d4d','こねない生地を焼いた(薄い縁)');
+        if(S.disc.d4c&&S.disc.d4d)disc('d4','焼き比べ');logE('baked knead='+kn.toFixed(2)+' lip='+lipH(d)+' rim='+rimW(d));}}
+      break;
+    case 'fromOven':A.t+=dt;if(A.t>=A.dur){S.phase='cut';setupCut();S.cutStart=S.t;}break;
+    case 'cut':if(d&&d.sep<1)d.sep=Math.min(1,d.sep+dt*4);break;
+    case 'boxing':A.t+=dt;if(S.box&&S.box.needRebuild)buildBoxCanvases();
+      if(A.t>=1.65){S.phase='deliver';S.box.entry.arrive=true;save();S.deliv.started=true;sparkle(L.slots[Math.min(S.shelf.length-1,7)].x,L.slots[Math.min(S.shelf.length-1,7)].y-4,4);}break;
+    case 'deliver':updDeliver(dt);break;
+    case 'newDough':A.t+=dt;if(A.t>=A.dur){S.phase='dough';if(S.dough){S.dough.sq=1;}const v=boardView(S.dough);flour(v.cx,v.cy+8,8,40);}break;
+  }
+  if(S.cutFx){S.cutFx.t+=dt;if(S.cutFx.t>0.35)S.cutFx=null;}
+  if(S.cbox&&S.cbox.needRebuild&&S.box){if(S.box.needRebuild)buildBoxCanvases();S.cbox.needRebuild=false;renderCounter();}
+  // flying toppings
+  for(let i=S.fly.length-1;i>=0;i--){const f=S.fly[i];f.t+=dt;if(f.t>=f.dur){S.fly.splice(i,1);if(!f.back&&S.dough&&S.dough.id===f.doughId&&S.phase==='dough'){attachTop(f.type,f.a,f.u);}}}
+  // oven morph
+  const mt=S.longMode?1:0;if(S.ovenM!==mt){S.ovenM=clamp(S.ovenM+(mt>S.ovenM?dt:-dt)/1.1,0,1);}
+  if(S.outdoor)S.outdoorT=Math.min(1,S.outdoorT+dt*2.5);
+  updPeople(dt);
+  // particles
+  for(let i=S.parts.length-1;i>=0;i--){const p=S.parts[i];p.l-=dt;if(p.l<=0){S.parts.splice(i,1);continue;}p.vy+=p.g*dt;p.x+=p.vx*dt;p.y+=p.vy*dt;}
+  S.stats.maxParts=Math.max(S.stats.maxParts,S.parts.length);
+  // chef
+  const ch=S.chef;ch.hatT=Math.max(0,ch.hatT-dt);ch.wide=Math.max(0,ch.wide-dt);ch.happy=Math.max(0,ch.happy-dt);ch.jump=Math.max(0,ch.jump-dt);
+  if(ch.count){ch.count.t+=dt;if(ch.count.t>0.42){ch.count.t=0;const pk=ch.count.peaks[ch.count.i];
+      if(pk!=null&&S.dough&&S.phase==='dough'){const v=boardView(S.dough);const p=fromShape(v,pk,sampleR(S.dough.cur,pk)+2);sparkle(p.x,p.y,5);snd.count(ch.count.i);}
+      ch.count.i++;if(ch.count.i>ch.count.peaks.length){ch.count=null;ch.happy=0.9;snd.happy();}}}
+  S.clerk.up=Math.max(0,S.clerk.up-dt);S.clerk.wave=Math.max(0,S.clerk.wave-dt);
+  for(const k in S.wob){S.wob[k]-=dt;if(S.wob[k]<=0)delete S.wob[k];}
+  for(const o of S.orders)if(o)o.pop=Math.min(1,(o.pop||0)+dt*3);
+  updHint(dt);
+}
+// ---------- guidance ----------
+function target(){
+  const ph=S.phase,d=S.dough;
+  if(ph==='dough'){if(!d||d.spin||S.drag)return null;if(d.pulls<2)return{k:'edge'};if(d.tops.length<3)return{k:'bin',i:S.hintBin};return{k:'handle'};}
+  if(ph==='cut'){const C=S.cut;if(C&&C.lines.length+C.P.length<1&&S.t-S.cutStart<12)return{k:'pizza'};return{k:'box'};}
+  return null;
+}
+function edgeHintAngle(){const d=S.dough;let best=0,bv=-1e9;for(let i=0;i<N;i+=4){const room=L.bound[i]-d.r[i];const pref=Math.cos(ANG(i))*6;if(room+pref>bv){bv=room+pref;best=ANG(i);}}return best;}
+function updHint(dt){
+  const tg=target();S.tg=tg;const idle=S.t-S.lastInput;
+  S.hintBump=null;
+  if(tg&&tg.k==='edge'&&S.dough&&!act){if(!S.hintA||S.hintAid!==S.dough.id+':'+S.dough.pulls){S.hintA=edgeHintAngle();S.hintAid=S.dough.id+':'+S.dough.pulls;}
+    const ph=(S.t%1.5);S.hintBump={on:ph<0.35,a:S.hintA,v:ph<0.35?Math.round(Math.sin(ph/0.35*Math.PI)*3):0};}
+  // demo hand once per action kind
+  if(S.demo){S.demo.t+=dt;const dm=S.demo;
+    if(dm.k==='edge'){const p=(dm.t%1.4)/1.4;dm.ext=p<0.65?Math.round(ease(p/0.65)*24/3)*3:24*(1-ease((p-0.65)/0.35));}
+    if(dm.t>=dm.dur){S.demoShown[dm.k]=true;S.demo=null;}}
+  else if(tg&&idle>4&&!S.demoShown[tg.k]&&!act&&(S.phase==='dough'||S.phase==='cut')){
+    S.demo={k:tg.k,t:0,dur:tg.k==='edge'?2.8:2.4,a:S.hintA||0,i:tg.i||0};logE('demo '+tg.k);}
+  if(tg&&tg.k==='bin'&&Math.floor(S.t/4)!==Math.floor((S.t-dt)/4))S.hintBin=(S.hintBin+1)%4;
+}
+function cancelDemo(){if(S.demo){S.demoShown[S.demo.k]=true;S.demo=null;}}
+
+// ================================================================
+//  DRAW
+// ================================================================
+function wx(k){return S.wob[k]?(Math.floor(S.t*30)%2?1:-1):0;}
+function hintOn(k,i){const tg=S.tg;if(!tg||tg.k!==k)return false;if(i!=null&&tg.i!==i)return false;return true;}
+function bounce(){const p=S.t%1.5;return p<0.4?-Math.round(Math.sin(p/0.4*Math.PI)*3):0;}
+function drawOrders(){
+  const w=L.win;const sw=w.w/3;
+  g.save();g.beginPath();g.rect(w.x+2,w.y+2,w.w-4,w.h-4);g.clip();
+  for(let k=0;k<3;k++){const o=S.orders[k];if(!o||o.gone)continue;const cx=Math.round(w.x+sw*k+sw/2);
+    const ly=w.y+w.h+7-Math.round((1-ease(o.pop))*-12);
+    drawPerson({look:o.look,x:cx,y:ly,face:k>1,hop:0,state:'win',t:S.t+k},'down',0,true);}
+  g.restore();
+  for(let k=0;k<3;k++){const o=S.orders[k];if(!o||o.gone)continue;const cx=Math.round(w.x+sw*k+sw/2);const by=w.y+3;const bw=Math.min(18,Math.floor(sw)-2),bh=Math.min(13,Math.round(w.h*0.5));
+    if(o.pop<0.5)continue;
+    rect(g,cx-bw/2-1,by-1,bw+2,bh+2,INK);rect(g,cx-bw/2,by,bw,bh,CREAM);rect(g,cx-1,by+bh,3,1,INK);rect(g,cx,by+bh,1,1,CREAM);
+    const ic=orderIcon(o);drawSC(ic,cx,by+Math.floor(bh/2));
+    if(o.hist)rect(g,cx+bw/2-3,by+1,2,2,RED);}
+}
+function drawShelf(){
+  for(let i=0;i<L.slots.length;i++){const e=S.shelf[i];if(!e||!e.arrive)continue;const s=L.slots[i];const m=shelfMini(e);
+    drawSC(m,s.x+wx('shelf'+i),s.y-Math.ceil(m.h-m.cy)+1);}
+}
+function drawStreetDeco(){
+  // string lights
+  const st=L.street;const y=st.y+2;for(let x=st.x+4;x<st.x+st.w;x+=8){const on=(Math.floor(S.t*2)+x/8)%3<2;rect(g,x,y+((x/8)%2),1,1,on?(x%16?CHEESE:FIRE):WALL);}
+  if(S.outdoor){const k=ease(S.outdoorT);for(const t of L.tablesOut){const hh=Math.round(14*k);
+    drawTable(g,t.x,t.y,true);
+    if(hh>2){rect(g,t.x,t.y-hh,1,hh,CREAM);const pw=Math.round(18*k);rect(g,t.x-pw/2-1,t.y-hh-4,pw+2,5,INK);for(let x=0;x<pw;x++)rect(g,t.x-pw/2+x,t.y-hh-3,1,3,(Math.floor(x/3)%2)?CREAM:RED);rect(g,t.x-pw/2+2,t.y-hh-5,pw-4,1,INK);}}}
+}
+function drawOvenBack(){
+  const m=ease(S.ovenM),ox=L.oven.x+wx('oven'),oy=L.oven.y;
+  if(m<0.02){
+    rect(g,ox-29,oy-7,58,8,INK);rect(g,ox-28,oy-6,56,6,BROWN);rect(g,ox-28,oy-6,56,1,GOLD);
+    const ws=[56,56,54,52,48,42,34,22];let y=oy-6;
+    g.fillStyle=PAL[INK];for(let k=0;k<ws.length;k++){y-=4;g.fillRect(ox-ws[k]/2-1,y-1,ws[k]+2,6);}
+    y=oy-6;for(let k=0;k<ws.length;k++){y-=4;rect(g,ox-ws[k]/2,y,ws[k],4,RED);for(let x=((k%2)*3)+2;x<ws[k]-1;x+=6)rect(g,ox-ws[k]/2+x,y+3,1,1,DRED);rect(g,ox-ws[k]/2,y+3,ws[k],0,DRED);}
+    rect(g,ox+8,oy-48,7,12,INK);rect(g,ox+9,oy-47,5,10,DRED);rect(g,ox+8,oy-49,7,2,BROWN);
+    // mouth
+    rect(g,ox-13,oy-23,26,17,CREAM);rect(g,ox-11,oy-26,22,4,CREAM);rect(g,ox-8,oy-28,16,3,CREAM);
+    rect(g,ox-12,oy-22,24,16,INK);rect(g,ox-10,oy-25,20,3,INK);rect(g,ox-7,oy-27,14,2,INK);
+    const hot=S.phase==='bake';rect(g,ox-12,oy-8,24,2,hot?FIRE:DRED);
+  }else{
+    const C=L.conv;const l=Math.round(lerp(ox-29,C.x0,m)),r=Math.round(lerp(ox+29,C.x1,m)),top=Math.round(lerp(oy-38,C.top,m)),bot=oy;
+    const sh=S.ovenM<1?(Math.floor(S.t*40)%2):0;
+    rect(g,l-1,top-1+sh,r-l+2,bot-top+2,INK);rect(g,l,top+sh,r-l,bot-top,INK);
+    // inner glow row
+    const hot=S.phase==='bake';for(let x=l+2;x<r-2;x+=2){const hh=hash(x,Math.floor(S.t*10));rect(g,x,bot-7+sh,1,1,hot?(hh<0.5?FIRE:DRED):(hh<0.15?DRED:INK));}
+    S.convBox={l,r,top:top+sh,bot};
+  }
+}
+function drawOvenFront(){
+  const m=ease(S.ovenM),ox=L.oven.x+wx('oven'),oy=L.oven.y;const hot=S.phase==='bake';
+  if(m<0.02){const fs=Math.floor(S.t*12);const n=hot?22:5;
+    for(let k=0;k<n;k++){const hx=hash(k,fs),hy=hash(k+50,fs);const x=ox-11+Math.floor(hx*22),h=hot?(1+Math.floor(hy*6)):(1+Math.floor(hy*2));
+      rect(g,x,oy-7-h,1,h,hy<0.33?FIRE:hy<0.66?CHEESE:RED);}
+    return;}
+  const B=S.convBox;if(!B)return;const {l,r,top,bot}=B;
+  // top brick band
+  rect(g,l,top,r-l,6,RED);for(let x=l+2;x<r;x+=6)rect(g,x,top+(((x-l)/6)%2?1:4),1,1,DRED);rect(g,l,top+6,r-l,1,DRED);
+  // pillars
+  for(let x=l;x<=r-3;x+=26){rect(g,x,top+6,3,bot-top-11,RED);rect(g,x+1,top+9,1,1,DRED);}
+  rect(g,r-3,top,3,bot-top-5,RED);
+  // fire front row (wave left->right while baking)
+  const fs=Math.floor(S.t*12);const wave=hot?(S.anim.t/S.anim.dur):-1;
+  for(let x=l+3;x<r-3;x+=2){const hh=hash(x,fs);const near=wave>=0&&Math.abs((x-l)/(r-l)-wave*1.1)<0.25;const h=hot?(near?2+Math.floor(hh*5):1+Math.floor(hh*2)):(hh<0.3?1:0);
+    if(h)rect(g,x,bot-6-h,1,h,hh<0.4?FIRE:hh<0.7?CHEESE:RED);}
+  // belt
+  const off=Math.floor(S.t*(hot?24:6))%8;rect(g,l,bot-5,r-l,5,WALL);for(let x=l-8+off;x<r;x+=8){if(x>=l)rect(g,x,bot-5,Math.min(4,r-x),1,INK);if(x>=l)rect(g,x,bot-1,Math.min(4,r-x),1,INK);}
+  for(let x=l+4;x<r-2;x+=10)rect(g,x,bot-3,2,1,CREAM);
+  if(S.ovenM>=1)for(let x=l+12;x<r-12;x+=52){rect(g,x,top-3,4,3,DRED);}
+}
+function drawChef(){
+  const ch=S.chef;const x=L.chef.x+wx('chef'),y=L.chef.y-(ch.jump>0?Math.round(Math.sin(ch.jump/0.6*Math.PI)*5):0);
+  // gaze target
+  let tx=null,ty=null;const tg=S.tg;
+  if(S.drag||act&&act.kind==='knead'){tx=act?act.x:null;ty=act?act.y:null;}
+  else if(tg){const p=targetPoint(tg);if(p){tx=p.x;ty=p.y;}}
+  else if(S.phase==='bake'||S.phase==='toOven'){tx=L.oven.x;ty=L.oven.y-14;}
+  else if(S.phase==='deliver'){tx=L.counter.x;ty=L.counter.y;}
+  let gx=0,gy=0;if(tx!=null){gx=tx>x+8?1:tx<x-8?-1:0;gy=ty>y-20?1:ty<y-30?-1:0;}
+  const idle=S.t-S.lastInput;
+  let arm='down';if(ch.count)arm='count';else if(ch.wide>0)arm='wow';else if(S.phase==='bake')arm='peel';else if(tg&&idle>2)arm='point';
+  const flip=gx<0&&arm==='point';
+  const L2=[];
+  L2.push([-4,-8,3,7,WALL],[1,-8,3,7,WALL],[-4,-1,3,1,INK],[1,-1,3,1,INK]);
+  L2.push([-5,-19,10,11,WHITE],[-4,-14,8,6,CREAM],[-1,-18,1,1,RED,1],[-1,-16,1,1,RED,1]);
+  if(arm==='down'||arm==='peel')L2.push([-7,-18,2,7,WHITE],[5,-18,2,7,WHITE],[-7,-11,2,2,SKIN],[5,-11,2,2,SKIN]);
+  if(arm==='peel')L2.push([7,-20,1,12,GOLD]);
+  if(arm==='point')L2.push([-7,-18,2,7,WHITE],[-7,-11,2,2,SKIN],[5,-17,6,2,WHITE],[11,-17,2,2,SKIN],[13,-17,1,1,SKIN]);
+  if(arm==='count'){const up=Math.floor(S.t*5)%2;L2.push([-7,-18,2,7,WHITE],[-7,-11,2,2,SKIN],[5,-25+up,2,8,WHITE],[5,-27+up,2,2,SKIN],[6,-29+up,1,2,SKIN]);}
+  if(arm==='wow')L2.push([-7,-26,2,8,WHITE],[5,-26,2,8,WHITE],[-7,-28,2,2,SKIN],[5,-28,2,2,SKIN]);
+  L2.push([-4,-26,8,7,SKIN],[-4,-21,1,1,RED,1],[3,-21,1,1,RED,1],[-2,-20,4,1,BROWN,1]);
+  // eyes
+  if(ch.wide>0){L2.push([-4,-25,3,3,WHITE,1],[1,-25,3,3,WHITE,1],[-3,-24,1,1,INK,1],[2,-24,1,1,INK,1]);}
+  else if(ch.happy>0){L2.push([-3,-23,2,1,INK,1],[1,-23,2,1,INK,1],[-1,-21,2,1,RED,1]);}
+  else{const px=gx>0?1:0,py=gy>0?1:0;L2.push([-3,-24,2,2,WHITE,1],[1,-24,2,2,WHITE,1],[-3+px,-24+py,1,1,INK,1],[1+px,-24+py,1,1,INK,1]);}
+  // hat (crooked)
+  let hx=clamp(ch.hat,-3,3);if(ch.hatT>0)hx+=Math.round(Math.sin(S.t*28)*1.2);
+  const hy=S.phase==='bake'?(Math.floor(S.t*8)%2):0;
+  L2.push([-4+Math.round(hx/2),-30+hy,8,4,WHITE],[-5+hx,-34+hy,10,4,WHITE],[-3+hx,-36+hy,6,2,WHITE],[-4+Math.round(hx/2),-27+hy,8,1,CREAM,1]);
+  spr(g,x,y,L2,flip);
+}
+function targetPoint(tg){
+  const d=S.dough;
+  if(tg.k==='edge'&&d){const v=boardView(d);return fromShape(v,S.hintA||0,sampleR(d.cur,S.hintA||0));}
+  if(tg.k==='bin'){const b=L.bins[tg.i];return{x:b.x,y:b.y};}
+  if(tg.k==='handle')return{x:L.handle.x,y:L.handle.y};
+  if(tg.k==='pizza'&&d){const v=doughView();return{x:v.cx,y:v.cy};}
+  if(tg.k==='box')return{x:L.stack.x,y:L.stack.y-6};
+  return null;
+}
+function drawClerk(){
+  const c=S.clerk;let pose='down';if(c.up>0)pose='up';else if(c.wave>0)pose=Math.floor(S.t*6)%2?'wave':'down';else if(S.phase==='cut'&&hintOn('box'))pose='point';
+  drawPerson({look:CLERK,x:L.clerk.x+wx('clerk'),y:L.clerk.y,face:true,hop:0,state:'clerk',t:S.t},pose,0,true,true);
+}
+function drawStack(){
+  const x=L.stack.x+wx('stack'),y=L.stack.y+(hintOn('box')?bounce():0);
+  for(let k=0;k<3;k++){const yy=y-4*(k+1);rect(g,x-10,yy-1,20,5,INK);rect(g,x-9,yy,18,3,DOUGH);rect(g,x-9,yy,18,1,GOLD);if(k===2)rect(g,x-1,yy+1,2,1,RED);}
+  if(hintOn('box'))twinkle(x,y-16);
+}
+function twinkle(x,y){const p=Math.floor(S.t*4)%4;if(p===0||p===2){rect(g,x,y-2,1,5,WHITE);rect(g,x-2,y,5,1,WHITE);}else if(p===1){rect(g,x,y,1,1,CHEESE);}}
+function drawBins(){
+  for(let i=0;i<4;i++){const b=L.bins[i];const hb=hintOn('bin',i);const x=b.x+wx('bin'+i),y=b.y+(hb?bounce():0);
+    const w=b.w;rect(g,x-w/2-1,y-2,w+2,b.h/2+4,INK);rect(g,x-w/2,y-1,w,b.h/2+2,BROWN);rect(g,x-w/2,y-1,w,1,GOLD);
+    const T=TOPS[i];spr(g,x-6,y-3,T);spr(g,x+5,y-3,T);spr(g,x,y-5,T);if(w>24){spr(g,x-10,y-1,T);spr(g,x+10,y-1,T);}
+    if(hb)twinkle(x+w/2-2,y-8);}
+}
+function drawHandle(){
+  const hb=hintOn('handle');const x=L.handle.x+wx('handle'),y=L.handle.y+(hb?bounce():0);
+  const d=S.dough;const onBoard=S.phase==='dough'||S.phase==='cut'||S.phase==='newDough';
+  if(onBoard&&S.peelBot!=null&&S.peelBot<y-3){rect(g,x-2,S.peelBot,4,y-S.peelBot,INK);rect(g,x-1,S.peelBot,2,y-S.peelBot,GOLD);}
+  rect(g,x-7,y-3,14,7,INK);rect(g,x-6,y-2,12,5,RED);rect(g,x-5,y-2,10,1,FIRE);rect(g,x-6,y+2,12,1,DRED);
+  if(hb)twinkle(x+8,y-6);
+}
+function drawPeel(v,d){
+  let mnx=1e9,mxx=-1e9,mny=1e9,mxy=-1e9;for(let i=0;i<N;i++){const x=d.cur[i]*COS[i]*v.s,y=d.cur[i]*SIN[i]*v.sv;mnx=Math.min(mnx,x);mxx=Math.max(mxx,x);mny=Math.min(mny,y);mxy=Math.max(mxy,y);}
+  const x=Math.round(L.dc.x+mnx-3),y=Math.round(L.dc.y+mny-3),w=Math.round(mxx-mnx+6),h=Math.round(mxy-mny+8);
+  const b=L.board;const X=Math.max(b.x+1,x),Y=Math.max(b.y+1,y),X2=Math.min(b.x+b.w-1,x+w),Y2=Math.min(b.y+b.h-1,y+h);
+  rect(g,X-1,Y,X2-X+2,Y2-Y,INK);rect(g,X,Y-1,X2-X,Y2-Y+2,INK);rect(g,X,Y,X2-X,Y2-Y,GOLD);rect(g,X+1,Y,X2-X-2,1,DOUGH);
+  S.peelBot=Y2;
+}
+function drawDough(){
+  const d=S.dough;if(!d){layDirty=null;return;}const ph=S.phase;
+  if(ph==='boxing'&&S.anim.t>=1.0)return;if(ph==='deliver')return;
+  doughCur(d);const v=doughView();
+  const inOven=ph==='bake'||ph==='toOven'&&S.anim.t>S.anim.dur*0.7||ph==='fromOven'&&S.anim.t<S.anim.dur*0.3;
+  if((ph==='dough'||ph==='cut'||ph==='newDough'||ph==='boxing')&&!(ph==='newDough'&&S.anim.t<0.4))drawPeel(boardView(d),d);else S.peelBot=null;
+  if(ph==='boxing'&&S.anim.t>=0.35&&S.box){drawSC(S.box.bigOpen,L.dc.x,L.dc.y);}
+  let bakeFn=null;
+  if(ph==='bake'&&S.longMode){const C=S.convBox||{l:L.conv.x0,r:L.conv.x1};const p=S.anim.t/(S.anim.dur*0.85);bakeFn=X=>clamp((p*1.5-(X-C.l)/(C.r-C.l))*2.2,0,1);}
+  const hint=hintOn('pizza')?bounce():0;
+  const o={R:d.cur,s:v.s,sv:v.sv,cx:v.cx,cy:v.cy+hint,rot:v.rot,mode:'pizza',lip:Math.max(1,Math.round(lipH(d)*Math.min(1,v.sv*1.1))),knead:d.knead,rimW:Math.max(1,Math.round(rimW(d)*v.s)),seed:d.seed,
+    bake:d.baked?1:(ph==='bake'?d.bake:0),bakeFn,dents:d.dents.length?d.dents:null,cut:(ph==='cut'||ph==='boxing')?d.cut:null,sep:d.sep};
+  // render into layer (skip when nothing changed)
+  let sum=0;for(let i=0;i<N;i++)sum+=d.cur[i]*(i%7+1);
+  const sig=[o.s,o.sv,o.cx,o.cy,o.rot,o.lip,o.knead,o.rimW,o.bake,!!bakeFn&&S.anim.t,o.dents?o.dents.length+':'+o.dents.map(q=>q.life.toFixed(2)).join():0,o.cut?(o.cut.P||o.cut.B).length:0,o.sep,sum.toFixed(2),W,H,d.id].join('|');
+  const bb=(sig===S.lastSig&&!d.forceRender)?null:renderShape(LT,o);S.lastSig=sig;d.forceRender=false;if(bb)S.renders=(S.renders||0)+1;
+  if(bb){let ux=bb.x,uy=bb.y,ux2=bb.x+bb.w,uy2=bb.y+bb.h;if(layDirty){ux=Math.min(ux,layDirty.x);uy=Math.min(uy,layDirty.y);ux2=Math.max(ux2,layDirty.x+layDirty.w);uy2=Math.max(uy2,layDirty.y+layDirty.h);
+      // clear old area not covered
+      for(let y=layDirty.y;y<layDirty.y+layDirty.h;y++){if(y>=bb.y&&y<bb.y+bb.h){LT.u32.fill(0,y*W+layDirty.x,y*W+Math.min(bb.x,layDirty.x+layDirty.w));LT.u32.fill(0,y*W+Math.max(bb.x+bb.w,layDirty.x),y*W+layDirty.x+layDirty.w);}else LT.u32.fill(0,y*W+layDirty.x,y*W+layDirty.x+layDirty.w);}}
+    lx.putImageData(LT.img,0,0,ux,uy,Math.max(1,ux2-ux),Math.max(1,uy2-uy));layDirty=bb;}
+  g.drawImage(lay,0,0);
+  // toppings
+  for(const tp of d.tops){const p=topPos(d,v,tp);const sc=Math.min(v.s,v.sv);if(sc<0.6){rect(g,p.x,p.y+hint,1,1,[RED,CHEESE,GREEN,CREAM][tp.type]);continue;}spr(g,p.x,p.y+hint,(d.baked?TOPSB:TOPS)[tp.type]);}
+  // cut line fx
+  if(S.cutFx&&ph==='cut'){const f=S.cutFx,k=ease(f.t/0.15);
+    if(f.strip){const ex=extents(d.r);const span=Math.max(ex.maxX-ex.minX,ex.maxY-ex.minY)*k;const px=v.cx+f.p*f.c*v.s,py=v.cy+f.p*f.s*v.sv;pline(g,px+f.s*span*v.s*0.5,py-f.c*span*v.sv*0.5,px-f.s*span*v.s*0.5,py+f.c*span*v.sv*0.5,WHITE);}
+    else{const r1=sampleR(d.r,f.a)*k,r2=sampleR(d.r,f.a+Math.PI)*k;pline(g,v.cx+Math.cos(f.a)*r1*v.s,v.cy+Math.sin(f.a)*r1*v.sv,v.cx-Math.cos(f.a)*r2*v.s,v.cy-Math.sin(f.a)*r2*v.sv,WHITE);}}
+  // hint sparkle on edge
+  if(hintOn('edge')&&S.hintBump&&!S.demo){const p=fromShape(v,S.hintA,sampleR(d.cur,S.hintA)+4);twinkle(p.x,p.y);}
+  if(hintOn('pizza'))twinkle(v.cx,v.cy-8);
+}
+function drawBoxAnim(){
+  const B=S.box;if(!B||S.phase!=='boxing')return;const t=S.anim.t;
+  if(t<0.35){const p=ease(t/0.35);const x=lerp(L.stack.x,L.dc.x,p),y=lerp(L.stack.y-12,L.dc.y,p)-Math.sin(Math.PI*p)*20;drawSC(B.bigOpen,x,y,lerp(0.15,1,p));}
+  else if(t<1.0){if(t>=0.7){const p=ease((t-0.7)/0.3);drawSC(B.big,L.dc.x,L.dc.y-Math.round((1-p)*26));if(p>0.95&&!B.closedFx){B.closedFx=true;snd.fold();flour(L.dc.x,L.dc.y,6,30);}}}
+  else{const p=ease((t-1.0)/0.6);const k=lerp(1,B.cs/B.v0.s,p);drawSC(B.big,lerp(L.dc.x,L.counter.x,p),lerp(L.dc.y,L.counter.y-6,p)-Math.sin(Math.PI*p)*16,k);
+    const e=B.entry;const idx=S.shelf.indexOf(e);if(idx>=0){const sl=L.slots[idx];const m=shelfMini(e);const k2=lerp(1,m.w/B.big.w,p);
+      if(p>0.05)drawSC(B.big,lerp(L.dc.x,sl.x,p),lerp(L.dc.y,sl.y-6,p)-Math.sin(Math.PI*p)*30,k2*0.999);}}
+}
+function drawCounter(){
+  const B=S.box,D=S.deliv;if(!B||!D||S.phase!=='deliver')return;if(D.boxGone)return;
+  const x=L.counter.x+wx('counter'),y=L.counter.y-Math.ceil(B.cl.h-B.cl.cy)+1;
+  if(!D.open){drawSC(B.cl,x,y);}
+  else{drawSC(B.op,x,y);if(S.cbox)drawSC(S.cbox,x,y);
+    const d=S.dough;}
+}
+function drawDoor(){
+  const dr=L.doorRect;let open=S.longMode;for(const p of S.people){if(Math.hypot(p.x-L.doorIn.x,p.y-L.doorIn.y)<14||Math.hypot(p.x-L.doorOut.x,p.y-L.doorOut.y)<14){open=true;break;}}
+  if(dr.horiz){if(open){rect(g,dr.x,dr.y,dr.w,dr.h,BG);rect(g,dr.x-1,dr.y-1,1,dr.h+2,GOLD);rect(g,dr.x+dr.w,dr.y-1,1,dr.h+2,GOLD);}else{rect(g,dr.x,dr.y,dr.w,dr.h,BROWN);rect(g,dr.x+dr.w-3,dr.y+1,1,1,CHEESE);}}
+  else{if(open){rect(g,dr.x,dr.y,dr.w,dr.h,BG);rect(g,dr.x-1,dr.y-1,dr.w+2,1,GOLD);}else{rect(g,dr.x,dr.y,dr.w,dr.h,BROWN);rect(g,dr.x+1,dr.y+dr.h/2,1,1,CHEESE);}}
+}
+// ---------- people sprites ----------
+const TOPS=[
+  [[-2,-1,5,3,RED],[-1,-2,3,5,RED],[0,-1,1,1,DRED,1],[-1,0,1,1,FIRE,1]],
+  [[-2,-2,4,4,CHEESE],[-2,-2,1,1,WHITE,1],[1,1,1,1,GOLD,1]],
+  [[-2,-2,5,1,GREEN],[-2,2,5,1,GREEN],[-2,-1,1,3,GREEN],[2,-1,1,3,GREEN],[-1,-2,3,1,DGREEN,1]],
+  [[-2,-2,5,2,CREAM],[-1,0,3,2,DOUGH],[-1,-2,1,1,WHITE,1]]];
+const TOPSB=[
+  [[-2,-1,5,3,DRED],[-1,-2,3,5,DRED],[-1,-1,2,2,RED,1]],
+  [[-3,-1,6,2,CHEESE],[-2,-2,3,1,CHEESE],[-1,1,2,1,CHEESE]],
+  [[-2,-2,5,1,DGREEN],[-2,2,5,1,DGREEN],[-2,-1,1,3,DGREEN],[2,-1,1,3,DGREEN]],
+  [[-2,-2,5,2,GOLD],[-1,0,3,2,DOUGH],[0,-2,1,1,BROWN,1]]];
+const ITEMS={
+  sliceB:[[-3,0,7,2,GOLD],[-2,2,5,2,CHEESE],[-1,4,3,2,CHEESE],[0,6,1,1,CHEESE],[0,2,1,1,RED,1],[-1,4,1,1,GREEN,1]],
+  slice:[[[-2,0,4,1,GOLD],[-1,1,3,1,CHEESE],[0,2,1,1,CHEESE],[0,1,1,1,RED,1]],[[-2,0,4,1,GOLD],[-1,1,3,1,CHEESE]],[[-2,0,4,1,GOLD]],[]],
+  stripB:[[-6,0,12,1,GOLD],[-6,1,12,2,CHEESE],[-6,3,12,1,GOLD],[-3,1,1,1,RED,1],[2,2,1,1,GREEN,1]],
+  strip:[[[-3,0,6,1,GOLD],[-3,1,6,1,CHEESE],[-1,1,1,1,RED,1]],[[-2,0,4,1,GOLD],[-2,1,4,1,CHEESE]],[[-1,0,2,1,GOLD]],[]]};
+function personRects(lk,pose,fr,happy){
+  const R=[];const sh=lk.shirt,pa=lk.pants,hr=lk.hair,sk=lk.skin;const sit=pose==='sit'||pose==='siteat';const u=sit?2:0;
+  if(sit){R.push([-3,-7,7,2,pa],[2,-5,2,4,pa],[2,-1,3,1,INK]);}
+  else if(fr===1){R.push([-4,-6,2,5,pa],[2,-6,2,5,pa],[-5,-1,3,1,INK],[2,-1,3,1,INK]);}
+  else R.push([-3,-6,2,5,pa],[1,-6,2,5,pa],[-3,-1,2,1,INK],[1,-1,2,1,INK]);
+  R.push([-3,-12+u,6,6,sh]);
+  switch(pose){
+    case 'up':R.push([-4,-16+u,1,4,sh],[3,-16+u,1,4,sh],[-4,-17+u,1,1,sk],[3,-17+u,1,1,sk]);break;
+    case 'hold':R.push([-4,-11+u,1,3,sh],[3,-11+u,1,3,sh],[-3,-9+u,1,1,sk],[2,-9+u,1,1,sk]);break;
+    case 'wave':R.push([-4,-11+u,1,4,sh],[-4,-7+u,1,1,sk],[3,-15+u,1,4,sh],[3,-16+u,1,1,sk]);break;
+    case 'point':R.push([-4,-11+u,1,4,sh],[-4,-7+u,1,1,sk],[3,-11+u,3,1,sh],[6,-11+u,1,1,sk]);break;
+    case 'siteat':case 'eat':R.push([-4,-11+u,1,4,sh],[-4,-7+u,1,1,sk],[3,-12+u,1,3,sh],[2,-13+u,1,1,sk]);break;
+    default:R.push([-4,-11+u,1,4,sh],[3,-11+u,1,4,sh],[-4,-7+u,1,1,sk],[3,-7+u,1,1,sk]);
+  }
+  R.push([-3,-17+u,6,5,sk]);
+  switch(lk.st){
+    case 0:R.push([-3,-18+u,6,2,hr],[-3,-17+u,1,2,hr]);break;
+    case 1:R.push([-3,-18+u,6,2,hr],[-4,-17+u,1,6,hr],[3,-17+u,1,6,hr]);break;
+    case 2:R.push([-3,-18+u,6,2,hr],[-5,-16+u,2,3,hr],[3,-16+u,2,3,hr]);break;
+    default:R.push([-3,-19+u,6,2,lk.cap],[-3,-18+u,8,1,lk.cap],[-3,-17+u,1,1,hr]);
+  }
+  R.push([-2,-15+u,1,1,INK,1],[1,-15+u,1,1,INK,1]);
+  if(happy)R.push([-1,-13+u,2,1,RED,1]);
+  return R;
+}
+function drawPerson(p,pose,fr,happy,noItem){
+  const hop=p.hop>0?Math.round(Math.sin(p.hop/0.35*Math.PI)*3):0;
+  const R=personRects(p.look,pose,fr,happy);spr(g,p.x,p.y-hop,R,p.face);
+  if(p.look===CLERK&&pose!=='up')spr(g,p.x,p.y-hop,[[-2,-11,4,5,CREAM]],p.face,true);
+  if(!noItem&&p.item)drawItem(p,pose,hop);
+}
+function drawItem(p,pose,hop){
+  const it=p.item,x=Math.round(p.x),y=Math.round(p.y-hop);const u=(pose==='sit'||pose==='siteat')?2:0;
+  if(it.k==='box'){if(it.sc){const k=Math.min(1,12/it.sc.w);drawSC(it.sc,x,y-9,k);}else{spr(g,x,y-10,[[-5,-3,10,6,DOUGH],[-5,-3,10,1,GOLD],[-1,-1,2,1,RED,1]]);}return;}
+  if(it.big){if(it.k==='strip')spr(g,x,y-21,ITEMS.stripB);else spr(g,x,y-25,ITEMS.sliceB);return;}
+  const b=Math.min(3,p.bites||0);const L2=(it.k==='strip'?ITEMS.strip:ITEMS.slice)[b];if(!L2.length)return;
+  spr(g,x+(p.face?-3:3),y-15+u,L2,p.face);
+}
+function drawPeople(){
+  const list=S.people.slice().sort((a,b)=>a.y-b.y);
+  for(const p of list){
+    let pose='down',fr=0,happy=true;
+    const moving=p.path.length>0;
+    if(moving){fr=Math.floor(p.wt*7)%2;pose=p.item&&p.item.big?'up':p.item&&p.item.k==='box'?'hold':p.item?'eat':'down';}
+    else switch(p.state){
+      case 'sit':pose=p.item&&p.bites<3&&(Math.floor(p.sitT*2)%3===0)?'siteat':'sit';break;
+      case 'dance':pose=p.item&&p.item.k==='box'?(Math.floor(p.t*6)%2?'hold':'up'):(Math.floor(p.t*6)%2?'up':'wave');if(Math.floor(p.t*6)%2)p.face=!p.face;p.hop=Math.max(p.hop,Math.floor(p.t*6)%3===0?0.2:0);break;
+      case 'yield':pose='wave';break;case 'cheer':pose=Math.floor(p.t*5)%2?'up':'wave';break;
+      case 'queue':case 'inLine':pose=Math.floor((S.t+p.id)*0.7)%5===0?'wave':'down';p.face=S.longMode?(L.por?false:true):false;if(L.por&&p.state==='queue')p.face=false;if(!L.por&&p.state==='queue')p.face=true;break;
+      default:pose=p.item&&p.item.big?'up':p.item&&p.item.k==='box'?'hold':'down';
+    }
+    if(p.state==='queue'&&!L.por)p.face=true;
+    drawPerson(p,pose,fr,happy);
+  }
+}
+function drawParticles(){
+  for(const p of S.parts){const x=Math.round(p.x),y=Math.round(p.y);
+    if(p.k==='p'){rect(g,x,y,1,1,p.c);}
+    else if(p.k==='s'){if(p.l>p.ml*0.5){rect(g,x,y-1,1,3,p.c);rect(g,x-1,y,3,1,p.c);}else rect(g,x,y,1,1,p.c);}
+    else if(p.k==='h'){spr(g,x,y,[[-2,-1,2,2,RED],[1,-1,2,2,RED],[-1,1,3,1,RED],[0,2,1,1,RED]],false,Math.floor(p.l*8)%2===0);}
+    else if(p.k==='m'){rect(g,x,y,2,2,p.c);}}
+}
+function drawFly(){
+  for(const f of S.fly){const p=ease(f.t/f.dur);spr(g,lerp(f.fx,f.tx,p),lerp(f.fy,f.ty,p)-Math.sin(Math.PI*p)*14,TOPS[f.type]);}
+  if(S.carry)spr(g,S.carry.x,S.carry.y-6,TOPS[S.carry.type]);
+}
+const HAND=[[0,-7,2,6,SKIN],[-2,-2,6,5,SKIN],[-3,-1,1,3,SKIN],[2,-4,1,2,SKIN],[3,-4,1,2,SKIN],[0,-7,2,1,CREAM,1]];
+function drawDemo(){
+  const dm=S.demo;if(!dm)return;const d=S.dough;let x=0,y=0,show=true;
+  if(dm.k==='edge'&&d){const v=boardView(d);const r=sampleR(d.cur,dm.a);const p=fromShape(v,dm.a,r);x=p.x;y=p.y;}
+  else if(dm.k==='bin'&&d){const b=L.bins[dm.i];const v=boardView(d);const p=(dm.t%1.2)/1.2;const e=ease(p/0.8);x=lerp(b.x,v.cx,e);y=lerp(b.y-4,v.cy,e)-Math.sin(Math.PI*e)*16;if(p<0.85)spr(g,x,y-6,TOPS[dm.i]);}
+  else if(dm.k==='handle'){const p=(dm.t%0.8)/0.8;x=L.handle.x;y=L.handle.y+2-Math.round(Math.sin(p*Math.PI)*5);}
+  else if(dm.k==='cut'||dm.k==='pizza'){if(!d)return;const v=doughView();const p=(dm.t%1.2)/1.2;const e=ease(p);x=v.cx-18+36*e;y=v.cy-6+12*e;if(p>0.2&&p<0.9)pline(g,v.cx-18,v.cy-6,x,y,WHITE);}
+  else if(dm.k==='box'){const p=(dm.t%0.8)/0.8;x=L.stack.x;y=L.stack.y-8-Math.round(Math.sin(p*Math.PI)*4);}
+  else show=false;
+  if(show)spr(g,x,y+7,HAND);
+}
+function draw(){
+  g.drawImage(bgc,0,0);
+  drawOrders();drawShelf();drawStreetDeco();
+  drawOvenBack();
+  const ph=S.phase;const inOvenPhase=ph==='bake'||ph==='toOven'||ph==='fromOven';
+  if(inOvenPhase)drawDough();
+  drawOvenFront();
+  drawChef();drawClerk();drawStack();
+  if(!inOvenPhase)drawDough();else S.peelBot=null;
+  drawBoxAnim();
+  drawBins();drawHandle();
+  drawCounter();drawDoor();drawPeople();drawFly();drawParticles();drawDemo();
+  dctx.drawImage(buf,0,0,W*P*DPR,H*P*DPR);
+  S.frames++;
+}
+
+// ================================================================
+//  LOOP & EVENTS
+// ================================================================
+let raf=0,running=false,lastTs=0;
+function frame(ts){
+  if(!running)return;raf=requestAnimationFrame(frame);
+  let dt=(ts-lastTs)/1000;lastTs=ts;if(!(dt>0))dt=0.001;if(dt>0.05)dt=0.05;
+  try{update(dt);draw();}catch(e){S.err=String(e&&e.stack||e);running=false;throw e;}
+}
+function start(){if(running)return;running=true;lastTs=performance.now();raf=requestAnimationFrame(frame);}
+function stop(){running=false;cancelAnimationFrame(raf);}
+cv.addEventListener('pointerdown',e=>{e.preventDefault();audioInit();if(S.audio==='created')S.audio='started';
+  if(act){return;}const p=toLog(e);S.lastInput=S.t;cancelDemo();
+  act={id:e.pointerId,x0:p.x,y0:p.y,x:p.x,y:p.y,t0:S.t,kind:null};try{cv.setPointerCapture(e.pointerId);}catch(_){}
+  onDown(p.x,p.y);},{passive:false});
+cv.addEventListener('pointermove',e=>{if(!act||e.pointerId!==act.id)return;e.preventDefault();const p=toLog(e);act.x=p.x;act.y=p.y;S.lastInput=S.t;onMove(p.x,p.y);},{passive:false});
+function endPtr(e,cancel){if(!act||e.pointerId!==act.id)return;const p=toLog(e);const x=cancel?act.x:p.x,y=cancel?act.y:p.y;try{onUp(cancel,x,y);}finally{act=null;S.carry=null;S.drag=null;}}
+cv.addEventListener('pointerup',e=>{e.preventDefault();endPtr(e,false);},{passive:false});
+cv.addEventListener('pointercancel',e=>endPtr(e,true));
+cv.addEventListener('lostpointercapture',e=>endPtr(e,true));
+document.addEventListener('touchmove',e=>{e.preventDefault();},{passive:false});
+document.addEventListener('touchend',()=>{audioInit();},{passive:true});
+document.addEventListener('gesturestart',e=>e.preventDefault());
+document.addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('dblclick',e=>e.preventDefault());
+document.addEventListener('selectstart',e=>e.preventDefault());
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){if(act){try{onUp(true,act.x,act.y);}catch(_){}act=null;S.carry=null;S.drag=null;}stop();stopRoar();if(AC&&AC.state==='running'){try{AC.suspend();}catch(_){}}}
+  else{if(AC){try{AC.resume().catch(()=>{});}catch(_){}}if(S.phase==='bake')startRoar();start();}});
+let rzT=0;window.addEventListener('resize',()=>{clearTimeout(rzT);rzT=setTimeout(()=>{resize();if(!running&&!document.hidden)start();},60);});
+window.addEventListener('orientationchange',()=>{setTimeout(resize,200);});
+
+// ---------- boot ----------
+resize();loadSave();initOrders();S.dough=newDough();
+// test hooks (読み取りと座標計算のみ。画面上には何も出さない)
+window.__gf={S,hitDough,hitObj,getAct:()=>act,L:()=>L,P:()=>P,W:()=>W,H:()=>H,analyze,doughView,
+  info(){const d=S.dough;const v=d?doughView():null;return{phase:S.phase,P,W,H,por:L.por,longMode:S.longMode,ovenM:S.ovenM,outdoor:S.outdoor,
+    dough:d?{cx:v.cx,cy:v.cy,s:v.s,knead:d.knead,tops:d.tops.length,pulls:d.pulls,cls:analyze(d.r).cls,n:analyze(d.r).n,ext:extents(d.r),lip:lipH(d),rim:rimW(d),baked:d.baked}:null,
+    pieces:S.cut?S.cut.pieces.length:0,people:S.people.length,seated:S.seatOcc.filter(Boolean).length,shelf:S.shelf.length,
+    orders:S.orders.map(o=>o&&o.an.cls),disc:Object.keys(S.disc),stats:S.stats,saveState:S.saveState,saveOK:S.saveOK,audio:AC?AC.state:'none',err:S.err||null,frames:S.frames,running};},
+  pt(name,i){const v=S.dough?doughView():null;switch(name){case 'handle':return{x:L.handle.x*P,y:L.handle.y*P};case 'bin':return{x:L.bins[i].x*P,y:(L.bins[i].y-2)*P};
+    case 'stack':return{x:L.stack.x*P,y:(L.stack.y-6)*P};case 'center':return{x:v.cx*P,y:v.cy*P};case 'slot':return{x:L.slots[i].x*P,y:(L.slots[i].y-4)*P};
+    case 'edge':{const d=S.dough;const r=sampleR(d.cur,i)*v.s;return{x:(v.cx+Math.cos(i)*r)*P,y:(v.cy+Math.sin(i)*r*v.sv/v.s)*P};}
+    case 'board':return{x:L.board.x*P,y:L.board.y*P,w:L.board.w*P,h:L.board.h*P};}return null;}};
+start();
+})();
+</script>
+</body>
+</html>
