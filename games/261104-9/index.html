@@ -588,6 +588,7 @@ function updGuide(dt){
   d.look.x=lerp(d.look.x,lx,1-Math.exp(-6*dt)); d.look.y=lerp(d.look.y,ly,1-Math.exp(-6*dt));
   // finger demo: once per target, after ~4s of no input
   if(S.demo){ S.demo.t+=dt; const dm=S.demo;
+    if(dm.prompt&&drag.id!==null&&dm.t>1.4) dm.t=0.6;
     if(dm.first&&dm.t>0.75&&dm.t<1.25){ // pull the doll one small step
       const nx=d.x+dm.dir*30*dt; const g=groundAt(nx,d.y+STEP); if(!wallAt(nx+dm.dir*7,d.y,48)&&g.y>=d.y-3){ d.x=nx; d.y=g.y; d.face=dm.dir; d.phase+=30*dt/9; d.stride=0.4; if(Math.floor(d.phase)!==Math.floor(d.phase-30*dt/9)) footstep(g.s,60);} }
     if(dm.t>2.1) S.demo=null; }
@@ -601,6 +602,7 @@ function updGuide(dt){
 const cv=document.getElementById('c'); const ctx=cv.getContext('2d');
 let W=0,H=0,DPR=1,SC=1,GY=0,camX=500,portrait=true,INS={t:0,b:0,l:0,r:0};
 const WMIN=0,WMAX=1090;
+const viewEnd=()=>S.cake||(S.hand&&S.hand.type==='deliver')?WMAX:710;
 function readInsets(){
   const el=document.createElement('div'); el.style.cssText='position:fixed;left:0;top:0;visibility:hidden;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
   document.body.appendChild(el); const cs=getComputedStyle(el);
@@ -612,8 +614,9 @@ function layout(){
   cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
   const uw=W-INS.l-INS.r, uh=H-INS.t-INS.b;
   portrait=uw/uh<1.05;
-  SC=portrait?Math.min(uw/590,uh/520):Math.min(uw/760,uh/440);
-  GY=portrait?INS.t+uh*0.63:INS.t+uh*0.77;
+  // Keep the cookie, spoon and whole cup visible together in either orientation.
+  SC=Math.min(uw/(viewEnd()-WMIN+30),uh/440);
+  GY=INS.t+uh*0.5+60*SC;
   BG=null;
 }
 const halfW=()=>(W-INS.l-INS.r)/2/SC;
@@ -622,7 +625,8 @@ const X=x=>(x-camX)*SC+midX();
 const Y=y=>GY-y*SC;
 const toWorld=(px,py)=>({x:(px-midX())/SC+camX,y:(GY-py)/SC});
 function camTarget(){
-  const hw=halfW(); if(hw*2>=WMAX-WMIN) return (WMAX+WMIN)/2;
+  const hw=halfW(), end=viewEnd();
+  if(hw*2>=end-WMIN) return (end+WMIN)/2;
   let f=S.doll.x+S.doll.face*40;
   if(S.hand&&S.hand.type!=='clean') f=Math.max(f,820);
   return clamp(f,WMIN+hw,WMAX-hw);
@@ -644,22 +648,31 @@ function wiggleAt(w){
 }
 cv.addEventListener('pointerdown',e=>{
   e.preventDefault(); audioInit();
-  if(drag.active) return; // ignore extra fingers
+  if(drag.id!==null||e.isPrimary===false) return; // one owner, including a held hint
   S.lastInput=S.t; S.demo=null;
+  drag.id=e.pointerId; try{cv.setPointerCapture(e.pointerId);}catch(_){}
   const w=toWorld(e.clientX,e.clientY);
   if(hitDoll(e.clientX,e.clientY)){
-    drag.active=true; drag.id=e.pointerId; try{cv.setPointerCapture(e.pointerId);}catch(_){}
+    drag.active=true;
     drag.ox=w.x-S.doll.x; drag.oy=w.y-S.doll.y; drag.tx=S.doll.x; drag.ty=S.doll.y;
     drag.t0=performance.now(); drag.sx=e.clientX; drag.sy=e.clientY; drag.moved=false;
     stomp('down'); window.__firstTouchT=performance.now();
-  } else wiggleAt(w);
+  } else {
+    wiggleAt(w);
+    // A missed grab points back to the doll; it never moves scenery or advances play.
+    if(!S.hand) S.demo={t:0.25,first:false,prompt:true,dir:GT&&GT.x<S.doll.x?-1:1};
+  }
 },{passive:false});
 cv.addEventListener('pointermove',e=>{ if(!drag.active||e.pointerId!==drag.id)return; e.preventDefault();
   if(Math.hypot(e.clientX-drag.sx,e.clientY-drag.sy)>9) drag.moved=true;
   const w=toWorld(e.clientX,e.clientY); drag.tx=w.x-drag.ox; drag.ty=w.y-drag.oy; S.lastInput=S.t; },{passive:false});
 function release(e){ if(e&&e.pointerId!==undefined&&e.pointerId!==drag.id)return;
   const wasTap=drag.active&&e&&e.type==='pointerup'&&!drag.moved&&performance.now()-drag.t0<450;
-  drag.active=false; drag.id=null; if(S){ S.lastInput=S.t; if(wasTap) stomp('tap'); } }
+  const id=drag.id; drag.active=false; drag.id=null;
+  if(id!==null&&cv.hasPointerCapture(id)) cv.releasePointerCapture(id);
+  if(S){ S.lastInput=S.t; if(wasTap) stomp('tap');
+    if(S.demo&&S.demo.prompt){ if(e&&e.type==='pointerup') S.demo.t=0.6; else S.demo=null; }
+  } }
 cv.addEventListener('pointerup',release); cv.addEventListener('pointercancel',release); cv.addEventListener('lostpointercapture',release);
 window.addEventListener('blur',()=>release());
 ['contextmenu','gesturestart','gesturechange','dblclick','selectstart'].forEach(n=>document.addEventListener(n,e=>e.preventDefault(),{passive:false}));
@@ -1082,7 +1095,7 @@ function drawDemo(){
   const tx=d.x+(dm.first?0:dm.dir*pull*28), ty=d.y+46;
   const hx=lerp(tx+dm.dir*-10+140,tx+6,sstep(t/0.6));
   const hy=lerp(ty+120,ty+8,sstep(t/0.6));
-  ctx.save(); ctx.globalAlpha=0.6*a; drawHand(hx,hy,-0.6,1,0.42,t>0.55?1:0);
+  ctx.save(); drawHand(hx,hy,-0.6,0.6*a,0.42,t>0.55?1:0);
   // fingertip ring
   if(t>0.55&&t<1.4){ ctx.strokeStyle='rgba(255,255,255,0.9)'; ctx.lineWidth=2*SC; ell(X(tx),Y(ty-6),(8+pull*4)*SC,(8+pull*4)*SC); ctx.stroke(); }
   ctx.restore();
@@ -1113,6 +1126,7 @@ function update(dt){
   buildSurfaces(); updCubes(dt);
   buildSurfaces(); updDoll(dt);
   updLemon(dt); updParticles(dt); updHand(dt); updCake(dt); updGuide(dt);
+  if(viewWidth!==viewEnd()){ viewWidth=viewEnd(); release(); layout(); camX=camTarget(); }
   S.clatter*=Math.exp(-3*dt);
   if(S.fadeDir>0){ S.fade=Math.min(1,S.fade+dt*1.8); } else if(S.fadeDir<0){ S.fade=Math.max(0,S.fade-dt*1.4); if(S.fade<=0) S.fadeDir=0; }
   const ct=camTarget(); camX=lerp(camX,ct,1-Math.exp(-3.2*dt));
@@ -1144,6 +1158,7 @@ function draw(){
 let last=0, running=true, rafId=0;
 function frame(ts){
   if(!running) return; rafId=requestAnimationFrame(frame);
+  if(resizePending){ resizePending=false; layout(); camX=camTarget(); }
   if(!last){ last=ts; }
   let dt=(ts-last)/1000; last=ts; if(dt<=0) return; if(dt>0.05) dt=0.05;
   try{ update(dt); draw(); }catch(err){ console.error(err); running=false; }
@@ -1153,7 +1168,8 @@ document.addEventListener('visibilitychange',()=>{
   else { if(!running){ running=true; last=0; rafId=requestAnimationFrame(frame);} if(AU.ctx) AU.ctx.resume().catch(()=>{}); }
 });
 window.addEventListener('pageshow',()=>{ if(!running&&!document.hidden){ running=true; last=0; rafId=requestAnimationFrame(frame);} });
-let rzT=0; function onResize(){ clearTimeout(rzT); rzT=setTimeout(()=>{ layout(); camX=camTarget(); },60); }
+let viewWidth=710, resizePending=false;
+function onResize(){ release(); resizePending=true; }
 window.addEventListener('resize',onResize); window.addEventListener('orientationchange',onResize);
 // boot
 newCycle(); layout(); buildTextures(); camX=camTarget(); buildSurfaces();
