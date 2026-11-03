@@ -375,7 +375,8 @@ function drawTownStatic(){
   for(const t of trees)ob.push([DEPTH(t[0],0,t[1]),()=>drawTree(t[0],t[1],t[2])]);
   for(const lx of T.farLamps)ob.push([DEPTH(lx,0,7.4),()=>{cub(lx-0.05,0,7.35,0.1,0.75,0.1,K.post);cub(lx-0.1,0.75,7.3,0.2,0.2,0.2,K.lampOff);}]);
   // landscape margin houses
-  for(const h of marginHouses())ob.push([DEPTH(h.x+h.w/2,0,h.z+h.d/2),()=>drawHouse(h,false)]);
+  L.mh=marginHouses();
+  for(const h of L.mh)ob.push([DEPTH(h.x+h.w/2,0,h.z+h.d/2),()=>drawHouse(h,false)]);
   ob.sort((a,b)=>b[0]-a[0]);for(const o of ob)o[1]();
 }
 const GUTTERS=[[[2.35,0.95],[3.15,0.95],[3.15,2.85]],[[9.8,5.2],[10.45,5.2]]];
@@ -469,8 +470,11 @@ const _xy={x:0,y:0};
 function consXY(k){const c=CONS[k],p=c.pos;let x,y;
   if(k===0)x=tsx(p.tx,0,3.6);else if(k===1)x=p.fx*W;else x=c.drag?c.dragX:tsx(T.anchors[p.anchor],0,T.lane);
   y=L.skyTop+p.fy*L.skyH-panPx*0.9;
+  if(k!==2)x=clamp(x,L.SP*1.4,W-L.SP*1.4);
   const e=consExtent(k);const minY=L.skyTop+8+(e.top+0.7)*L.SP,maxY=L.skyBot+L.U*1.2-panPx-(-e.bot+0.7)*L.SP;
   y=clamp(y,minY,Math.max(minY,maxY));
+  x+=Math.sin(NOW*9+k)*c.wob*L.SP*0.18;
+  if(G.phase==='newtown'&&!G.resetDone){const u=clamp(G.newT/1.1,0,1);y-=u*u*L.skyH*0.6;}
   _xy.x=x;_xy.y=y+Math.sin(NOW*0.7+k*2)*L.SP*0.06;return _xy;}
 function nodeSX(k,n,ax){const c=CONS[k];return k===2?ax+n.x*L.U:ax+n.x*L.SP*(k===1?c.mirror:1);}
 function nodeSY(k,n,ay){return ay-n.y*L.SP;}
@@ -508,7 +512,7 @@ function drawOneCons(k){
   }
   // nodes
   for(const n of c.nodes.values()){if(!n.born)continue;const sx=nodeSX(k,n,ax),sy=nodeSY(k,n,ay);
-    let s=n.bt<0.45?eob(n.bt/0.45):1;s*=n.fade*(1+0.35*n.pulse);if(s<=0.01)continue;
+    let s=n.bt<0.45?eob(n.bt/0.45):1;s*=n.fade*(1+0.35*n.pulse);if(G.phase==='newtown'&&!G.resetDone)s*=1-0.7*clamp(G.newT/1.1,0,1);if(s<=0.01)continue;
     if(n.kind==='face'){drawFace(sx,sy,SP*1.12*s);continue;}
     const r=SP*0.54*n.sz*s*(1+0.08*Math.sin(NOW*3+n.ph));
     if(n.kind==='pier'||n.kind==='hub')drawMesh(M_BOX,sx,-sy,0,r*0.95,r*0.95,r*0.95,NOW*0.6+n.ph,0.35,0.3,n.col,0.85,null,br);
@@ -542,6 +546,18 @@ function updateFace(dt){
   FACE.nextBlink-=dt;if(FACE.nextBlink<=0){FACE.blink=1;FACE.nextBlink=rnd(2.2,4.5);}FACE.blink=Math.max(0,FACE.blink-dt*7);
   FACE.laugh=Math.max(0,FACE.laugh-dt*0.7);FACE.smile=Math.max(0,FACE.smile-dt*0.5);FACE.cheek=Math.max(FACE.laugh,FACE.cheek-dt*0.4);
   FACE.gx=damp(FACE.gx,FACE.tgx,5,dt);FACE.gy=damp(FACE.gy,FACE.tgy,5,dt);
+}
+// faint star outlines where each box's constellation will form (matches the box picture)
+const GHOST=[[[-1.6,0.1],[-1.0,0.75],[-0.3,1.05],[0.4,1.0],[1.05,0.7],[1.6,0.1],[0,0]],
+  [[0,0],[0.85,0.85],[-0.85,-0.85],[0.85,-0.85],[-0.85,0.85]],
+  [[0,0],[0.65,0.75],[1.3,1.0],[1.95,0.75],[2.6,0]]];
+const GHOSTL=[[[0,1],[1,2],[2,3],[3,4],[4,5]],[[0,1],[0,2],[0,3],[0,4]],[[0,1],[1,2],[2,3],[3,4],[0,4]]];
+function drawGhosts(){
+  for(let k=0;k<3;k++){const c=CONS[k];if(c.nodes.size||G.phase==='newtown')continue;const a=consXY(k);const sx=k===2?L.U:L.SP,sy=L.SP;
+    const al=0.16+0.06*Math.sin(NOW*1.5+k*2);const pts=GHOST[k];
+    ctx.strokeStyle=CA(K.link,1,al*0.6);ctx.lineWidth=Math.max(1,L.SP*0.05);ctx.beginPath();
+    for(const[i,j]of GHOSTL[k]){ctx.moveTo(a.x+pts[i][0]*sx,a.y-pts[i][1]*sy);ctx.lineTo(a.x+pts[j][0]*sx,a.y-pts[j][1]*sy);}ctx.stroke();
+    ctx.fillStyle=CA(BOXCOL[k],1.3,al+0.08);for(const q of pts){const x=a.x+q[0]*sx,y=a.y-q[1]*sy,r=L.SP*0.16;ctx.beginPath();ctx.moveTo(x,y-r);ctx.lineTo(x+r*0.8,y);ctx.lineTo(x,y+r);ctx.lineTo(x-r*0.8,y);ctx.closePath();ctx.fill();}}
 }
 // memory constellations of earlier towns (small, faint, top of sky)
 let MEMORY=[];
@@ -790,7 +806,7 @@ function drawFX(){for(const f of FX){const a=Math.min(1,f.life/f.max*1.6),s=f.sz
 // ================= game / world state =================
 const G={phase:'build',turnT:0,marketT:0,newT:0,pan:0,panT:0,spout:0,millLit:0,bridgeLit:0,strings:0,bloomAll:0,winLit:0,
   marketIns:0,lastIns:-99,firstIns:false,turnSteps:{},towns:0,streamT:rnd(35,60),evtRain:0,evtWind:0,evtBridge:0};
-const WX={store:0,shower:0,drops:[],spl:[],rip:[],drizzle:0,reflT:0,fountRain:0,spawnAcc:0,dzAcc:0,lastLandX:4};
+const WX={lMin:99,lMax:-99,fMin:99,fMax:-99,store:0,shower:0,drops:[],spl:[],rip:[],drizzle:0,reflT:0,fountRain:0,spawnAcc:0,dzAcc:0,lastLandX:4};
 const WT={canal:0,fount:0,beds:[{w:0,g:0},{w:0,g:0}],over:0,overVis:0,ro:[],roAcc:[0,0,0]};
 const MILL={a:0,v:0};
 const FL={lit:0,glow:[0,0,0,0,0,0]};
@@ -840,7 +856,7 @@ function updateRain(dt){
   WX.reflT=Math.max(0,WX.reflT-dt*0.25);WX.fountRain=Math.max(0,WX.fountRain-dt*0.6);
 }
 function landDrop(d){
-  const v=d.fine?0.008:0.0075;WX.lastLandX=d.tx;
+  const v=d.fine?0.008:0.0075;WX.lastLandX=d.tx;if(d.fine){WX.fMin=Math.min(WX.fMin,d.tx);WX.fMax=Math.max(WX.fMax,d.tx);}else{WX.lMin=Math.min(WX.lMin,d.tx);WX.lMax=Math.max(WX.lMax,d.tx);}
   if(WX.spl.length<70)WX.spl.push({x:d.ex,y:d.ey,t:0,c:d.c});
   if(d.el==='canal'){if(WT.canal<1)WT.canal=Math.min(1,WT.canal+v*0.75);else WT.over+=v*0.75;if(WX.rip.length<34)WX.rip.push({x:d.tx,z:d.z,y:canalWaterY(),t:0});}
   else if(d.el==='fount'){WT.fount=Math.min(1,WT.fount+v*2.3);WX.fountRain=Math.min(1,WX.fountRain+0.08);if(WX.rip.length<34)WX.rip.push({x:d.tx,z:d.z,y:0.4,t:0});}
@@ -1038,7 +1054,7 @@ function updateMarket(dt){
 // ================= hooks from the grains =================
 function onFirstArrive(rec){
   const k=rec.k;
-  if(k===0){WX.shower=Math.min(14,WX.shower+6.5);WX.store=Math.min(1,WX.store+0.36);FACE.smile=1;if(G.phase==='market')WX.reflT=1;}
+  if(k===0){WX.lMin=99;WX.lMax=-99;WX.shower=Math.min(14,WX.shower+6.5);WX.store=Math.min(1,WX.store+0.36);FACE.smile=1;if(G.phase==='market')WX.reflT=1;}
   else if(k===1){MILL.v+=1.5*(CONS[1].P.dir||1);if(G.phase==='market'){petalGust();G.evtWind=1;}}
   else if(k===2){bridgeTargets(true);}
 }
@@ -1206,7 +1222,7 @@ function drawPole(i){const p=T.poles[i];cub(p[0]-0.04,0,p[1]-0.04,0.08,1.4,0.08,
 function drawFarLamps(){for(let i=0;i<FL.lit;i++){const lx=T.farLamps[i];const g=FL.glow[i];
   drawMesh(M_BOX,lx,0.85,7.4,0.2+0.15*g,0.2+0.15*g,0.2+0.15*g,0.5,0,0,K.lamp,0.95);
   ctx.fillStyle=CA(K.lamp,1,0.18+0.3*g);const sx=PX(lx,0.85,7.4),sy=PY(lx,0.85,7.4),r=L.U*(0.35+0.3*g);ctx.beginPath();for(let a=0;a<6;a++){const an=a*TAU/6;if(a)ctx.lineTo(sx+Math.cos(an)*r,sy+Math.sin(an)*r);else ctx.moveTo(sx+r,sy);}ctx.closePath();ctx.fill();}}
-function drawWindows(){if(G.winLit<=0)return;for(const h of houses)houseWindows(h,true);for(const h of marginHouses())houseWindows(h,true);}
+function drawWindows(){if(G.winLit<=0)return;for(const h of houses)houseWindows(h,true);for(const h of (L.mh||[]))houseWindows(h,true);}
 function drawSpout(){for(const s of SPOUT){drawMesh(M_BOX,s.x,s.y,s.z,0.07,0.07,0.07,0,0,0,RAINBOW[s.c],0.7);}}
 function drawPetals(){for(const p of PETALS)drawMesh(M_BOX,p.x,p.y,p.z,0.08,0.03,0.08,p.r,p.r*0.7,0,p.col,0.4);}
 // ---- painter list for dynamic objects ----
@@ -1320,17 +1336,17 @@ function onMove(e){
   else if(ACT.kind==='cons'){const k=ACT.k,c=CONS[k],p=c.pos;const ax=x-ACT.dx,ay=y-ACT.dy;
     const dt=Math.max(0.008,NOW-ACT.lt);ACT.vx=lerp(ACT.vx,(x-ACT.lx)/dt,0.3);ACT.lx=x;ACT.lt=NOW;
     p.fy=clamp((ay+panPx*0.9-L.skyTop)/L.skyH,0.02,1.05);
-    if(k===0)p.tx=clamp(townXFromScreen(ax,3.6),-0.5,14);
+    if(k===0)p.tx=clamp(townXFromScreen(clamp(ax,L.SP*1.4,W-L.SP*1.4),3.6),-0.5,13);
     else if(k===1){p.fx=clamp(ax/W,0.06,0.94);if(Math.abs(ACT.vx)>160){const want=Math.sign(ACT.vx),base=c.P.dir||1;const nf=want*base;if(nf!==c.flip){c.flip=nf;SFX.windTurn();}}}
     else c.dragX=clamp(ax,tsx(4.6,0,T.lane),tsx(11.2,0,T.lane));
     c.moved=true;G.consMoved=true;}
   else if(ACT.kind==='face'){const d=dist(x,y,ACT.lx,ACT.ly);ACT.path+=d;ACT.lx=x;ACT.ly=y;
-    if(ACT.path-ACT.given>FACE.size*0.8){ACT.given=ACT.path;strokeFace();}}
+    if(ACT.path-ACT.given>FACE.size*1.6){ACT.given=ACT.path;strokeFace();}}
   else if(ACT.kind==='tray'){const dx=x-ACT.x0;TRAY.off=ACT.off0+dx*0.85;}
 }
 function strokeFace(){
   G.faceStroked=true;FACE.laugh=1;FACE.cheek=1;SFX.giggle();CONS[0].wob=1;
-  const amt=Math.min(WX.store,0.11);if(amt>0.01){WX.store-=amt;WX.drizzle+=amt;}else WX.drizzle+=0.013;
+  WX.fMin=99;WX.fMax=-99;const amt=Math.min(WX.store,0.045);if(amt>0.01){WX.store-=amt;WX.drizzle+=amt;}else WX.drizzle+=0.013;
 }
 function onUp(e){
   if(!ACT||e.pointerId!==ACT.id)return;e.preventDefault();endAct(e.type==='pointercancel'||e.type==='lostpointercapture');}
@@ -1410,7 +1426,7 @@ function updateCue(dt){
 let DEMO=null;
 const ghost={i:0,x:0,y:0,h:0,snap:-1,snapT:0,col:K.gW,st:'drag',shape:'o',sc:1};
 function drawHand(x,y,press,ang){
-  setP(0,0,1);const s=L.pr*1.05*(1-0.1*press);const wx=x,wy=-y;
+  setP(0,0,1);const s=L.pr*1.35*(1-0.1*press);const wx=x,wy=-y;
   drawMesh(M_BOX,wx+s*0.15,wy-s*1.05,0,s*1.05,s*1.25,s*0.45,0,-0.25+ang,0,K.hand,0.25);
   drawMesh(M_BOX,wx-s*0.05,wy-s*0.2,-s*0.1,s*0.34,s*1.0,s*0.34,0,-0.25+ang,0,K.hand,0.3);
   drawMesh(M_BOX,wx-s*0.55,wy-s*0.95,-s*0.05,s*0.3,s*0.62,s*0.3,0,0.7+ang,0,K.handD,0.25);
@@ -1454,7 +1470,7 @@ const live=()=>!!(AUDIO.ac&&AUDIO.ac.state==='running');
 const PENTA=[0,2,4,7,9,12,14,16,19,21,24,26,28,31,33,36];
 const NT=(b,i)=>b*Math.pow(2,PENTA[clamp(i|0,0,PENTA.length-1)]/12);
 function rl(name,ms){const t=performance.now();if(AUDIO.last[name]&&t-AUDIO.last[name]<ms)return false;AUDIO.last[name]=t;return true;}
-function tone(f,t0,dur,type,vol,att,f2,dest){const ac=AUDIO.ac;try{const o=ac.createOscillator();o.type=type||'sine';o.frequency.setValueAtTime(f,t0);if(f2)o.frequency.exponentialRampToValueAtTime(f2,t0+dur*0.9);
+function tone(f,t0,dur,type,vol,att,f2,dest){const ac=AUDIO.ac;f=Math.min(f,16000);if(f2)f2=Math.min(f2,16000);try{const o=ac.createOscillator();o.type=type||'sine';o.frequency.setValueAtTime(f,t0);if(f2)o.frequency.exponentialRampToValueAtTime(f2,t0+dur*0.9);
   const g=ac.createGain();g.gain.setValueAtTime(0.0001,t0);g.gain.exponentialRampToValueAtTime(Math.max(0.0002,vol),t0+(att||0.005));g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
   o.connect(g);g.connect(dest||AUDIO.master);o.start(t0);o.stop(t0+dur+0.05);}catch(e){}}
 function bell(f,t0,dur,vol){tone(f,t0,dur,'sine',vol,0.004);tone(f*2.76,t0,dur*0.45,'sine',vol*0.35,0.003);tone(f*5.4,t0,dur*0.2,'sine',vol*0.12,0.002);}
@@ -1558,7 +1574,7 @@ function drawHouseWig(){if(!HWIG.some(v=>v>0))return;setTownP();for(let i=0;i<ho
 function render(){
   ctx=MAINCTX;ctx.setTransform(DPR,0,0,DPR,0,0);
   ctx.drawImage(skyC,0,-panPx*0.9,W,skyC.height/DPR);
-  drawSkyDynamic();drawMemory();
+  drawSkyDynamic();drawMemory();drawGhosts();
   ctx.drawImage(gndC,0,-panPx,W,H);
   drawHouseWig();
   drawTownDynamic();
@@ -1566,10 +1582,9 @@ function render(){
   drawStageBase();
   drawTray();
   for(const p of PIECES){if(p.st==='drag'||p.st==='fly'||p.st==='drop')continue;if(p.st==='sel'||p.st==='held'||p.st==='ret')drawCloth(p);drawPiece(p);}
-  drawGrains();drawLinks();
+  drawGrains();drawLinks();setP(0,0,1);drawFX();
   drawCons();
   for(const p of PIECES){if(p.st==='drag'||p.st==='fly'){drawCloth(p);drawPiece(p);}else if(p.st==='drop')drawPiece(p);}
-  setP(0,0,1);drawFX();
   drawDemo();
 }
 // ================= update =================
@@ -1585,12 +1600,14 @@ function update(dt){
   AUDIO.update(dt);
 }
 // ================= loop =================
+const PERF={acc:0,n:0,max:0,avg:0,peak:0};
 let running=true,lastTS=0,rafId=0,frames=0,needLayout=false,slowAcc=0,slowN=0;
 function frame(ts){
   if(!running){rafId=0;return;}
   if(needLayout){needLayout=false;if(ACT)endAct(true);layout();}
   const raw=lastTS?(ts-lastTS)/1000:0.016;lastTS=ts;const dt=Math.min(0.05,Math.max(0,raw));
-  try{update(dt);render();}catch(e){if(!frame.err){frame.err=1;console.warn(e);}}
+  const w0=performance.now();try{update(dt);render();}catch(e){if(!frame.err){frame.err=1;console.warn(e);}}
+  const wk=performance.now()-w0;PERF.acc+=wk;PERF.n++;if(wk>PERF.max)PERF.max=wk;if(PERF.n>=120){PERF.avg=PERF.acc/PERF.n;PERF.peak=PERF.max;PERF.acc=0;PERF.n=0;PERF.max=0;}
   frames++;
   if(raw>0&&raw<0.5){slowAcc+=raw;slowN++;if(slowN>=180){const avg=slowAcc/slowN;slowAcc=0;slowN=0;if(avg>0.026&&dprScale>0.6&&DPR>1){dprScale=Math.max(0.6,dprScale-0.15);needLayout=true;}}}
   rafId=requestAnimationFrame(frame);
@@ -1612,13 +1629,15 @@ startLoop();
 // read-only hooks for automated checks (no effect on play)
 window.__gf={
   frames:()=>frames,
+  perf:()=>({avg:+PERF.avg.toFixed(2),peak:+PERF.peak.toFixed(2),dpr:DPR}),
   info(){return{phase:G.phase,hist:hist.map(h=>h.join('')),sel:SEL,act:ACT?ACT.kind:null,pieces:PIECES.map(p=>({st:p.st,x:p.x,y:p.y-p.h,shape:p.shape})),
     canal:+WT.canal.toFixed(3),fount:+WT.fount.toFixed(3),beds:WT.beds.map(b=>+b.w.toFixed(3)),store:+WX.store.toFixed(3),drops:WX.drops.length,
     wind:{on:WIND.on,dir:WIND.dir,reach:+WIND.reach.toFixed(2)},cross:BR.cross.map(c=>({prog:+c.prog.toFixed(2),type:c.type,conn:c.conn})),tower:{p:+BR.towerP.toFixed(2),x:+BR.towerX.toFixed(2)},
     stalls:STALLS.map(s=>({spot:s.spot,type:s.type,prog:+s.prog.toFixed(2)})),res:RES.map(r=>({x:+r.x.toFixed(2),z:+r.z.toFixed(2),st:r.st,task:r.task?(r.task.spot||r.task.type):null})),
     cons:CONS.map(c=>({n:c.nodes.size,born:consBorn(c.k),complete:c.complete,P:c.P})),pan:+G.pan.toFixed(2),cue:CUE.kind,cueBox:CUE.box,cuePiece:CUE.piece,demo:!!DEMO,
     face:{x:FACE.sx,y:FACE.sy,s:FACE.size,laugh:+FACE.laugh.toFixed(2)},lastLand:+WX.lastLandX.toFixed(2),farLit:FL.lit,memory:MEMORY.length,store_state:STORE.state,
-    particles:{grains:GR.length,drops:WX.drops.length,fx:FX.length,spl:WX.spl.length},dpr:DPR,running};},
+    land:[+WX.lMin.toFixed(2),+WX.lMax.toFixed(2)],fine:[+WX.fMin.toFixed(2),+WX.fMax.toFixed(2)],reflT:+WX.reflT.toFixed(2),fountRain:+WX.fountRain.toFixed(2),drizzle:+WX.drizzle.toFixed(3),
+    dropCols:WX.drops.reduce((a,d)=>{a[d.c||0]=(a[d.c||0]||0)+1;return a;},{}),particles:{grains:GR.length,drops:WX.drops.length,fx:FX.length,spl:WX.spl.length},dpr:DPR,running};},
   geo(){return{W,H,sockets:L.sockets.map(s=>[s.x,s.y]),boxes:L.boxes.map(b=>[b.mx,b.my]),lip:[L.trayX0+L.trayW/2,(L.lipY0+L.lipY1)/2],pr:L.pr,
     cons:[0,1,2].map(k=>{const a=consXY(k);return[a.x,a.y];}),consNodes:[0,1,2].map(k=>[...CONS[k].nodes.values()].filter(n=>n.born).map(n=>nodeScreen(k,n))),
     face:[FACE.sx,FACE.sy,FACE.size],town:(x,y,z)=>[tsx(x,y,z),tsy(x,y,z)],U:L.U,SP:L.SP,safe:Object.assign({},SA)};},
