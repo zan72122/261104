@@ -1269,6 +1269,8 @@ function updTrain(w,dt){
     if(w.st>1.0&&w.st-w.lastEx>0.8){w.state='idle';w.st=0;}
   }else if(w.state==='idle'){
     exchangeTick(w,dt);
+    /* full with people waiting: the next run leaves by itself (次便) */
+    if(w.st>4.5&&freeSeats(w)===0&&queueCount(w)>0)depart(w,true);
   }
   const hp=trackAt(w.s);w.x=hp.x;w.y=hp.y;w.ang=hp.ang;
 }
@@ -1324,6 +1326,7 @@ function updFerris(w,dt){
   w.omega+=(want-w.omega)*Math.min(1,dt*(want>w.omega?2:5));
   const dr=w.omega*dt;w.rot+=dr;
   if(w.state==='turn'){w.turnLeft-=dr;if(w.turnLeft<=0&&w.pause<=0){w.state='idle';w.st=0;}}
+  else if(w.state==='idle'&&w.st>4.5&&freeSeats(w)===0&&queueCount(w)>0){w.state='turn';w.turnLeft=TAU;w.st=0;}
   for(const p of PASS)if(p.host===w&&p.state==='seated'){p.rideAcc=(p.rideAcc||0)+dr;if(p.rideAcc>=TAU*0.92){p.rideAcc=0;p.ridden++;}}
   if(R()<dt*w.omega*3)SFX.click();
   /* bottom gondola check */
@@ -1438,8 +1441,9 @@ function exchangeStep(w,gi){
     if(p&&p.state==='seated'&&wantsOff(p,w)){const o=otherWorkFor(w);alightTo(p,w,o||w);return true;}
   }
   /* board */
+  const fresh=PASS.some(q=>q.state==='queue'&&q.want===w.id&&q.noBoard!==w.id);
   for(const p of PASS){
-    if(p.state!=='queue'||p.want!==w.id||p.noBoard===w.id)continue;
+    if(p.state!=='queue'||p.want!==w.id||(fresh&&p.noBoard===w.id))continue;
     let si=-1;if(gi>=0){if(!w.seats[gi])si=gi;}else si=w.seats.indexOf(null);
     if(si<0)return false;
     w.seats[si]=p;p.host=w;p.seat=si;p.want=0;startJump(p);
