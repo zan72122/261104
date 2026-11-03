@@ -753,17 +753,19 @@ function updateTrip(dt){
 /* ---------------------------- camera ---------------------------- */
 const CAM={x:0,y:0,z:1};
 let CW=0,CH=0,DPR=1,LWK=1; const INS={t:0,r:0,b:0,l:0};
+const introView=()=>TRIP.n===0&&T.lap===0&&T.seg===SEG.start&&T.s<330&&W.laps===0;
 function baseZ(){
   /* 最初の画面は汽車・途切れた線路・駅・トンネル・時計台が全部入る広さ、走り出したら少し寄る */
-  const intro=TRIP.n===0&&T.lap===0&&T.seg===SEG.start&&T.s<330&&W.laps===0;
-  return Math.min(CW/(intro?720:560),CH/760);
+  return Math.min(CW/(introView()?1040:560),CH/760);
 }
 function camTarget(){
-  const z=baseZ(), vw=CW/z, vh=CH/z, po=carPose(0);
-  const margin=Math.min(vw*0.62,Math.max(Math.min(175,vw*0.2),OFF[T.cars]+75))+INS.l/z;
+  const z=baseZ(), vw=CW/z, vh=CH/z, po=carPose(0), intro=introView();
+  /* 初期の二つ穴面を中央付近へ。右側には駅・トンネルが入る余白を残す。 */
+  const margin=(intro?vw*0.44:Math.min(vw*0.62,Math.max(Math.min(175,vw*0.2),OFF[T.cars]+75)))+INS.l/z;
   const x=po.x+T.face*(vw/2-margin);
   const top=-570, bot=300; let y;
-  if(bot-top<=vh) y=(top+bot)/2; else y=clamp(po.y-40+T.drop*0.3,top+vh/2,bot-vh/2);
+  if(intro) y=po.y-52*TS;
+  else if(bot-top<=vh) y=(top+bot)/2; else y=clamp(po.y-40+T.drop*0.3,top+vh/2,bot-vh/2);
   return {x,y,z};
 }
 function updateCam(dt,snap){
