@@ -1,0 +1,1254 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<meta name="robots" content="noindex,nofollow">
+<title>はっくしょん！ボタン汽車のしろくろ星空鉄道</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden;overscroll-behavior:none;
+  touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+canvas{position:fixed;left:0;top:0;width:100%;height:100%;display:block;touch-action:none;-webkit-touch-callout:none;outline:none;background:#000}
+#safe{position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;
+  padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left)}
+</style>
+
+<script src="../../gf-playlog.js" defer></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="safe"></div>
+<script>
+(()=>{
+'use strict';
+/* =====================================================================
+   はっくしょん！ボタン汽車のしろくろ星空鉄道   (game 261104-14)
+   ride_rail / geo_mono / no_animal_princess
+   - 先頭(二つ穴の顔)をタップ: くしゃみで跳ぶ。四角=足元の線路、三角=高い弧で屋根へ
+   - 後ろの車両をタップ: 車輪が高速回転して加速。四角が下段へ転がる/トンネルで柱に積まれる
+   すべて白い直線・円・多角形。文字UIなし。
+   ===================================================================== */
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d',{alpha:false});
+const TAU=Math.PI*2;
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const ease=t=>{t=clamp(t,0,1);return t*t*(3-2*t);};
+const easeOut=t=>{t=clamp(t,0,1);return 1-(1-t)*(1-t)*(1-t);};
+const easeBack=t=>{t=clamp(t,0,1);const s=1.8,u=t-1;return 1+(s+1)*u*u*u+s*u*u;};
+const R=Math.random;
+const rnd=(a,b)=>a+R()*(b-a);
+const WHITE='#fff';
+
+/* ---------------------------- audio ---------------------------- */
+const AU={ctx:null,master:null,noise:null,ok:false};
+function audioStart(){
+  try{
+    if(AU.ctx){ if(AU.ctx.state!=='running'&&!document.hidden) AU.ctx.resume().catch(()=>{}); return; }
+    const AC=window.AudioContext||window.webkitAudioContext; if(!AC) return;
+    const c=new AC(); AU.ctx=c;
+    const comp=c.createDynamicsCompressor(); comp.threshold.value=-16; comp.ratio.value=4; comp.connect(c.destination);
+    const m=c.createGain(); m.gain.value=0.6; m.connect(comp); AU.master=m;
+    const len=Math.floor(c.sampleRate*1.2), b=c.createBuffer(1,len,c.sampleRate), d=b.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    AU.noise=b; AU.ok=true;
+    const o=c.createOscillator(), g=c.createGain(); g.gain.value=0.0001; o.connect(g); g.connect(m); o.start(); o.stop(c.currentTime+0.03);
+    if(c.state!=='running') c.resume().catch(()=>{});
+  }catch(e){ AU.ok=false; }
+}
+function canPlay(){ return AU.ok&&AU.ctx&&AU.ctx.state==='running'&&!document.hidden; }
+function tone(f,dur,type,vol,f2,delay){
+  if(!canPlay()) return;
+  try{
+    const c=AU.ctx,t=c.currentTime+(delay||0),o=c.createOscillator(),g=c.createGain();
+    o.type=type||'sine'; o.frequency.setValueAtTime(f,t);
+    if(f2) o.frequency.exponentialRampToValueAtTime(Math.max(20,f2),t+dur);
+    g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002,vol),t+0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    o.connect(g); g.connect(AU.master); o.start(t); o.stop(t+dur+0.03);
+  }catch(e){}
+}
+function noise(dur,ftype,f,q,vol,f2,delay,attack){
+  if(!canPlay()) return;
+  try{
+    const c=AU.ctx,t=c.currentTime+(delay||0),s=c.createBufferSource(); s.buffer=AU.noise;
+    const fl=c.createBiquadFilter(); fl.type=ftype; fl.frequency.setValueAtTime(f,t);
+    if(f2) fl.frequency.exponentialRampToValueAtTime(f2,t+dur); fl.Q.value=q;
+    const g=c.createGain(), a=attack||0.01;
+    g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002,vol),t+a);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    s.connect(fl); fl.connect(g); g.connect(AU.master); s.start(t,Math.random()*0.4); s.stop(t+dur+0.05);
+  }catch(e){}
+}
+const PENTA=[0,2,4,7,9];
+function note(i){ const o=Math.floor(i/5), k=((i%5)+5)%5; return 330*Math.pow(2,(o*12+PENTA[k])/12); }
+const SFX={
+  sneeze(p,big){                       /* 合成した息→破裂音。乗客が多いほど高く強く */
+    const k=1+p*0.05, pre=big?0.34:0.11;
+    noise(pre,'bandpass',650*k,1.3,big?0.22:0.12,1600*k,0,pre*0.85);
+    tone(210*k,pre,'sine',big?0.07:0.04,320*k);
+    noise(big?0.42:0.15,'highpass',big?1300:2100,0.7,big?0.55:0.34,null,pre,0.004);
+    noise(big?0.32:0.1,'bandpass',950,0.8,big?0.3:0.16,320,pre+0.01,0.004);
+    tone(big?130:175,big?0.36:0.15,'sine',big?0.5:0.28,48,pre);
+  },
+  hah(level){ noise(0.16,'bandpass',600+level*500,1.5,0.06+level*0.06,900+level*700,0,0.1); },
+  squash(){ tone(540,0.08,'sine',0.16,250); },
+  boing(h){ tone(250+h*40,0.2,'sine',0.18,560+h*70); },
+  click(i){ i=i||0; tone(2000+i*170,0.035,'square',0.06); tone(2700+i*190,0.03,'square',0.045,null,0.055); },
+  place(i){ tone(note(5+(i||0)%7),0.12,'triangle',0.2); noise(0.035,'highpass',3200,0.7,0.1); },
+  whirr(p){ tone(105,0.42,'sawtooth',0.06,480+p*40); noise(0.36,'bandpass',500,2,0.08,2300); },
+  roll(n){ n=n||5; for(let i=0;i<n;i++) tone(250-i*10,0.04,'triangle',0.15,null,0.04+i*0.065); },
+  bump(){ tone(150,0.18,'sine',0.22,85); noise(0.06,'lowpass',500,0.7,0.1); },
+  tick(){ tone(1500,0.025,'square',0.045); },
+  pip(i){ tone(note(7+i),0.13,'triangle',0.2); tone(note(12+i),0.08,'sine',0.06,null,0.05); },
+  chime(b){ b=b||5; [0,2,4,7].forEach((d,i)=>tone(note(b+d),0.55,'triangle',0.17,null,i*0.09)); },
+  bell(){ [0,0.55,1.1].forEach(d=>{ tone(660,1.4,'sine',0.17,null,d); tone(1320,0.8,'sine',0.05,null,d); }); },
+  soft(){ tone(900,0.06,'sine',0.045); },
+  sparkle(n){ n=n||10; for(let i=0;i<n;i++) tone(note(8+i),0.28,'sine',0.07,null,i*0.07); },
+  couple(){ tone(300,0.06,'square',0.1); tone(190,0.14,'triangle',0.2,null,0.07); },
+  gate(){ for(let i=0;i<4;i++) tone(i%2?740:880,0.12,'triangle',0.1,null,i*0.16); }
+};
+
+/* ---------------------------- world geometry ---------------------------- */
+const L=1900;                      /* 世界は横に繰り返す一周 */
+const YH=-200, YM=0, YL=190, YD=60, YB=-262, YG=262;
+const TS=1.25;                     /* 汽車の描画倍率 */
+const SEG={}, SEGS=[], SLOTS=[];
+const P=(x,y)=>({x,y});
+function lineP(a,b,o){ const n=Math.max(1,Math.ceil(Math.hypot(b.x-a.x,b.y-a.y)/6)); for(let i=o.length?1:0;i<=n;i++){const t=i/n;o.push(P(lerp(a.x,b.x,t),lerp(a.y,b.y,t)));} return o; }
+function bezP(a,b,c,d,o){ const n=44; for(let i=o.length?1:0;i<=n;i++){const t=i/n,u=1-t;
+  o.push(P(u*u*u*a.x+3*u*u*t*b.x+3*u*t*t*c.x+t*t*t*d.x,u*u*u*a.y+3*u*u*t*b.y+3*u*t*t*c.y+t*t*t*d.y));} return o; }
+function quadP(a,b,c,o){ const n=40; for(let i=o.length?1:0;i<=n;i++){const t=i/n,u=1-t;
+  o.push(P(u*u*a.x+2*u*t*b.x+t*t*c.x,u*u*a.y+2*u*t*b.y+t*t*c.y));} return o; }
+function fnP(f,n,o){ for(let i=o.length?1:0;i<=n;i++) o.push(f(i/n)); return o; }
+function mkSeg(id,pts,op){
+  op=op||{};
+  const cum=[0]; for(let i=1;i<pts.length;i++) cum.push(cum[i-1]+Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y));
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for(const p of pts){x0=Math.min(x0,p.x);y0=Math.min(y0,p.y);x1=Math.max(x1,p.x);y1=Math.max(y1,p.y);}
+  const s={id,idx:SEGS.length,pts,cum,len:cum[cum.length-1],jump:!!op.jump,draw:op.draw!==false,spd:op.spd||1,
+    dk:op.dk||null,turn:!!op.turn,wrap:!!op.wrap,slots:[],bb:[x0-30,y0-30,x1+30,y1+30],ghost:op.ghost||null};
+  SEG[id]=s; SEGS.push(s); return s;
+}
+function depthAt(sg,f){ const k=sg.dk; if(!k) return 1; if(f<=k[0][0]) return k[0][1];
+  for(let i=1;i<k.length;i++){ if(f<=k[i][0]){const a=k[i-1],b=k[i];return lerp(a[1],b[1],ease((f-a[0])/(b[0]-a[0])));} }
+  return k[k.length-1][1]; }
+function segAt(sg,s){
+  s=clamp(s,0,sg.len); let lo=0,hi=sg.cum.length-1;
+  while(hi-lo>1){const m=(lo+hi)>>1; if(sg.cum[m]<=s) lo=m; else hi=m;}
+  const a=sg.pts[lo],b=sg.pts[hi],ln=(sg.cum[hi]-sg.cum[lo])||1,t=(s-sg.cum[lo])/ln;
+  return {x:lerp(a.x,b.x,t),y:lerp(a.y,b.y,t),tx:(b.x-a.x)/ln,ty:(b.y-a.y)/ln,d:depthAt(sg,s/sg.len)};
+}
+function mkSlot(sg,s0,s1,lane){
+  const a=segAt(sg,s0),b=segAt(sg,s1);
+  const sl={sg,s0,s1,x0:a.x,y0:a.y,x1:b.x,y1:b.y,cx:(a.x+b.x)/2,cy:(a.y+b.y)/2,filled:true,inc:false,anim:1,lane,mine:false};
+  sg.slots.push(sl); SLOTS.push(sl); return sl;
+}
+(function build(){
+  let a;
+  mkSeg('start',lineP(P(-260,0),P(230,0),[]));
+  mkSeg('jumpUp',quadP(P(230,0),P(245,-420),P(292,YH),[]),{jump:true,draw:false,spd:3.6});
+  mkSeg('hi',lineP(P(292,YH),P(600,YH),[]));
+  a=[]; lineP(P(600,YH),P(640,YH),a); bezP(P(640,YH),P(730,YH),P(760,0),P(850,0),a); mkSeg('hiDown',a);
+  mkSeg('ramp',bezP(P(230,0),P(262,0),P(290,YL),P(330,YL),[]));
+  mkSeg('lo',lineP(P(330,YL),P(580,YL),[]));
+  a=[]; lineP(P(580,YL),P(720,YL),a); bezP(P(720,YL),P(790,YL),P(790,0),P(850,0),a); mkSeg('loB',a);
+  mkSeg('jumpDeck',quadP(P(580,YL),P(588,-120),P(612,YD),[]),{jump:true,draw:false,spd:3.2});
+  mkSeg('deck',lineP(P(612,YD),P(720,YD),[]));
+  mkSeg('deckOut',bezP(P(720,YD),P(770,YD),P(790,0),P(850,0),[]));
+  a=[]; lineP(P(720,YD),P(732,YD),a);
+  fnP(t=>{const f=t*Math.PI;return P(732+256*Math.sin(f),-196+256*Math.cos(f));},70,a);
+  lineP(P(732,-452),P(230,-452),a);
+  fnP(t=>{const f=t*Math.PI;return P(230-95*Math.sin(f),-357-95*Math.cos(f));},34,a);
+  mkSeg('ring',a,{spd:2.0,dk:[[0,1],[0.1,0.74]],turn:true});
+  mkSeg('back',lineP(P(230,YB),P(500,YB),[]),{dk:[[0,0.74]]});
+  mkSeg('backDown',bezP(P(500,YB),P(560,YB),P(560,YH),P(600,YH),[]),{dk:[[0,0.74],[1,1]]});
+  mkSeg('bridge',lineP(P(500,YB),P(1040,YB),[]),{spd:1.5,dk:[[0,0.74],[1,0.8]]});
+  mkSeg('bridgeDown',bezP(P(1040,YB),P(1140,YB),P(1150,0),P(1230,0),[]),{dk:[[0,0.8],[1,1]]});
+  mkSeg('trunkA',lineP(P(850,0),P(1230,0),[]),{spd:1.3});
+  mkSeg('wheelSt',lineP(P(1230,0),P(1400,0),[]));
+  a=[]; bezP(P(1040,YB),P(1180,YB),P(1250,-345),P(1330,-345),a); bezP(P(1330,-345),P(1450,-345),P(1560,-440),P(1700,-440),a);
+  mkSeg('termLine',a,{spd:1.1,dk:[[0,0.8],[0.4,1]]});
+  mkSeg('trunkB',lineP(P(1400,0),P(1640,0),[]),{spd:1.4,wrap:true});
+  for(let k=0;k<5;k++) mkSlot(SEG.start,280+36*k,316+36*k,'mid');
+  mkSlot(SEG.hi,0,36,'hi');
+  mkSlot(SEG.lo,2,38,'lo'); mkSlot(SEG.lo,38,74,'lo');
+})();
+
+/* 構造物の位置 */
+const STA={x0:330,x1:470,y:YH,roofY:-330,stopS:148,backStopS:210,sideX:540,sideY:-378};
+const TUN={x0:410,x1:540,top:55};
+const TOW={x:492,base:55,sz:36};
+const DECK={x0:509,x1:720,stopS:92};
+const CROSS={x:728};
+const WHL={x:1330,y:-170,r:125,n:8,stopS:150,riders:6};
+const TERM={x:1700,y:-440};
+const S0={x0:-190,x1:10};
+
+/* ---------------------------- state ---------------------------- */
+let GT=0;                    /* game time */
+const LOG=[];
+function log(ev,extra){ LOG.push({t:+GT.toFixed(2),ev,trip:TRIP.n,...(extra||{})}); if(LOG.length>4000) LOG.shift(); }
+function mkFolk(k){ return {k:k||(R()<0.5?2:4),ph:R()*TAU,wob:0,wv:0,hop:0,hv:0,look:0}; }
+let W=null;
+function freshWorld(trip){
+  const pats=[[0,2,4],[0,1,3],[0,2,3],[0,3,4]];
+  const pat=trip===0?pats[0]:pats[(trip+(R()*3|0))%pats.length];
+  SLOTS.forEach(s=>{s.filled=true;s.inc=false;s.anim=1;s.mine=false;});
+  SEG.start.slots.forEach((s,i)=>{ if(pat.includes(i)){s.filled=false;s.anim=0;} });
+  SEG.hi.slots[0].filled=false; SEG.hi.slots[0].anim=0;
+  SEG.lo.slots.forEach(s=>{s.filled=false;s.anim=0;});
+  const fw=[]; const kinds=trip%2?[4,2,4]:[2,4,2]; kinds.forEach(k=>fw.push(mkFolk(k)));
+  W={
+    roof:0, roofInc:0, roofAnim:[0,0,0],
+    pillar:0, pillarInc:0, pillarAnim:[0,0,0], towerUp:0, towerDone:false,
+    hand:0.3, handV:0, clockFolk:[],
+    crossOpen:false, gate:0, ringDraw:0, deckLap:-1,
+    frontWait:fw, backWait:[], wheelFolk:[],
+    spare:2, spareAnim:0, bridge:false, bridgeDraw:0,
+    wheel:0, wheelInc:0, wheelInFlight:0, termGoal:0, termGrow:false, wheelAnim:new Array(WHL.n).fill(0), wheelRot:0, wheelSpin:0, termOpen:false, termDraw:0,
+    seen:{}, order:[], route:[], wig:{}, laps:0
+  };
+}
+
+/* ---------------------------- train ---------------------------- */
+const CRUISE=85, ACC=170, DEC=150, FRONT=44;
+const OFF=[0,100,190,280];
+const T={seg:SEG.start,s:240,lap:0,v:0,dist:0,trail:[],cars:1,ride:[],boarding:0,boost:0,queue:null,event:null,
+  waiting:false,blk:null,lastFront:-9,lastBack:-9,streak:0,tickle:0,drop:0,dropV:0,face:1,taps:0};
+const CAR=[]; for(let i=0;i<4;i++) CAR.push({hy:0,hv:0,sq:0,sv:0,wa:0,wv:0,lean:0,lv:0,launch:-1,launchV:0,pop:1});
+const F={gap:13,gapT:13,rot:0,rotV:0,frown:0,shy:0,look:0,lookT:0};
+const LATER=[];
+function later(dt,fn){ LATER.push({t:GT+dt,fn}); }
+function runLater(){ for(let i=LATER.length-1;i>=0;i--){ if(GT>=LATER[i].t){ const f=LATER[i].fn; LATER.splice(i,1); try{f();}catch(e){} } } }
+const cap=()=>T.cars*3;
+function resetTrain(){
+  T.seg=SEG.start; T.s=240; T.lap=0; T.v=0; T.dist=600; T.trail.length=0;
+  for(let d=0;d<=600;d+=4) T.trail.push({d,x:-20-(600-d),y:0,fx:1,dep:1});
+  T.cars=1; T.ride=[]; T.boarding=0; T.boost=0; T.queue=null; T.event=null; T.waiting=false; T.blk=null;
+  T.streak=0; T.tickle=0; T.face=1;
+  CAR.forEach(c=>{c.hy=0;c.hv=0;c.sq=0;c.sv=0;c.wv=0;c.lean=0;c.lv=0;c.launch=-1;c.pop=1;});
+  F.gap=13;F.gapT=13;F.rot=0;F.rotV=0;F.frown=0;F.shy=0;F.look=0;
+}
+function trailAt(d){
+  const tr=T.trail; if(d<=tr[0].d) return tr[0]; const n=tr.length; if(d>=tr[n-1].d) return tr[n-1];
+  let lo=0,hi=n-1; while(hi-lo>1){const m=(lo+hi)>>1; if(tr[m].d<=d) lo=m; else hi=m;}
+  const a=tr[lo],b=tr[hi],t=(d-a.d)/((b.d-a.d)||1);
+  return {d,x:lerp(a.x,b.x,t),y:lerp(a.y,b.y,t),fx:lerp(a.fx,b.fx,t),dep:lerp(a.dep,b.dep,t)};
+}
+function pushTrail(){
+  const p=segAt(T.seg,T.s), tr=T.trail, last=tr[tr.length-1];
+  if(T.dist-last.d<2.5) return;
+  const fx=T.seg.turn?p.tx:(T.seg.jump?last.fx:(p.tx>=0?1:-1));
+  tr.push({d:T.dist,x:p.x+T.lap*L,y:p.y,fx,dep:p.d});
+  const minD=T.dist-OFF[3]-160; while(tr.length>2&&tr[1].d<minD) tr.shift();
+}
+function carPose(i){
+  const d=T.dist-OFF[i], a=trailAt(d), b=trailAt(d-22);
+  let tx=a.x-b.x, ty=a.y-b.y; const l=Math.hypot(tx,ty);
+  if(l<0.01){tx=a.fx>=0?1:-1;ty=0;} else {tx/=l;ty/=l;}
+  const sg=a.fx>=0?1:-1, sx=sg*Math.max(0.2,Math.abs(a.fx));
+  let rot=sg>0?Math.atan2(ty,tx):Math.atan2(-ty,-tx);
+  rot=clamp(rot,-0.55,0.55);
+  return {x:a.x,y:a.y,rot,sx,d:a.dep,sg};
+}
+function l2w(po,lx,ly,hy){ const S=TS*po.d, X=lx*S*po.sx, Y=ly*S, c=Math.cos(po.rot), s=Math.sin(po.rot);
+  return {x:po.x+X*c-Y*s, y:po.y+X*s+Y*c+(hy||0)}; }
+function carCenter(i){ const po=carPose(i); return l2w(po,i===0?0:0,i===0?-52:-46,CAR[i].hy+T.drop); }
+function facePos(){ const po=carPose(0); return l2w(po,10,-52,CAR[0].hy+T.drop); }
+function wrapNear(x,ref){ return x+L*Math.round((ref-x)/L); }
+
+function zoneMul(){
+  const id=T.seg.id, s=T.s;
+  if(id==='start'&&s>380) return 0.55;
+  if(id==='hi'&&W.roof<3&&s<300) return 0.45;
+  if(id==='lo'){ if(!W.towerDone) return 0.6; if(s>110) return 0.5; }
+  if(id==='wheelSt'&&W.wheel<WHL.n) return 0.55;
+  if(id==='deck') return 0.7;
+  return 1;
+}
+function nextSeg(sg,consume){
+  const q=T.queue;
+  switch(sg.id){
+    case 'start': if(q==='up'){ if(consume) T.queue=null; return SEG.jumpUp; }
+                  if(q==='down'){ if(consume) T.queue=null; return SEG.ramp; } return null;
+    case 'jumpUp': return SEG.hi;
+    case 'hi': return SEG.hiDown;
+    case 'hiDown': return SEG.trunkA;
+    case 'ramp': return SEG.lo;
+    case 'lo': if(q==='deck'&&W.towerDone){ if(consume) T.queue=null; return SEG.jumpDeck; } return SEG.loB;
+    case 'loB': return SEG.trunkA;
+    case 'jumpDeck': return SEG.deck;
+    case 'deck': return W.crossOpen?SEG.ring:SEG.deckOut;
+    case 'deckOut': return SEG.trunkA;
+    case 'ring': return SEG.back;
+    case 'back': return W.bridge?SEG.bridge:SEG.backDown;
+    case 'backDown': return SEG.hiDown;
+    case 'bridge': return W.termOpen?SEG.termLine:SEG.bridgeDown;
+    case 'bridgeDown': return SEG.wheelSt;
+    case 'trunkA': return SEG.wheelSt;
+    case 'wheelSt': return SEG.trunkB;
+    case 'trunkB': return SEG.start;
+    default: return null;
+  }
+}
+function within(sg,st){ return (T.seg===sg&&T.s>st&&T.s<st+80)?T.s:st; }
+function pendingStop(sg){
+  switch(sg.id){
+    case 'hi': if(W.roof>=3&&W.frontWait.length>0&&T.ride.length+T.boarding<cap()) return within(sg,STA.stopS); break;
+    case 'back': if(W.backWait.length>0&&((W.spare>0&&T.cars<3)||T.ride.length<cap())) return within(sg,STA.backStopS); break;
+    case 'deck': if(T.ride.length>0&&(!W.crossOpen||(W.spare>0&&T.cars<3&&W.backWait.length===0&&W.clockFolk.length===0&&W.laps>W.deckLap))) return within(sg,DECK.stopS); break;
+    case 'wheelSt': if(W.wheel>=WHL.n&&T.ride.length>0&&W.wheelFolk.length+W.wheelInFlight<WHL.riders&&!W.termOpen) return within(sg,WHL.stopS); break;
+  }
+  return null;
+}
+function lookAhead(maxD){
+  let sg=T.seg, s=T.s, acc=0, prevJump=false;
+  for(let g=0;g<7&&acc<maxD;g++){
+    let best=null;
+    if(!prevJump) for(const sl of sg.slots){
+      if(sl.filled) continue; if(sg===T.seg&&sl.s1<=s) continue;
+      const dd=Math.max(0,acc+sl.s0-s-FRONT); if(!best||dd<best.dist) best={dist:dd,kind:'gap',slot:sl};
+    }
+    const ps=pendingStop(sg);
+    if(ps!=null){ const dd=acc+ps-s; if(dd>-1&&(!best||dd<best.dist)) best={dist:Math.max(0,dd),kind:'station',seg:sg}; }
+    if(best) return best;
+    const nx=nextSeg(sg,false);
+    if(!nx){ const off=sg.id==='start'?FRONT-6:0; return {dist:Math.max(0,acc+sg.len-s-off),kind:sg.id==='termLine'?'terminal':'branch'}; }
+    prevJump=sg.jump; acc+=sg.len-s; s=0; sg=nx;
+  }
+  return null;
+}
+/* 前方(予定経路)の空いた線路を探す */
+function gapsAhead(n,maxD,lanes){
+  const out=[]; let sg=T.seg, s=T.s, acc=0;
+  for(let g=0;g<7&&acc<maxD&&out.length<n;g++){
+    for(const sl of sg.slots){
+      if(sl.filled||sl.inc) continue; if(sg===T.seg&&sl.s1<=s) continue;
+      if(lanes&&!lanes.includes(sl.lane)) continue;
+      if(acc+sl.s0-s<maxD) out.push(sl); if(out.length>=n) break;
+    }
+    const nx=nextSeg(sg,false); if(!nx) break; acc+=sg.len-s; s=0; sg=nx;
+  }
+  return out;
+}
+function advance(ds){
+  let guard=0;
+  while(ds>1e-6&&guard++<8){
+    const rem=T.seg.len-T.s;
+    if(ds<rem){ T.s+=ds; T.dist+=ds; ds=0; break; }
+    T.s=T.seg.len; T.dist+=rem; ds-=rem;
+    const nx=nextSeg(T.seg,true);
+    if(!nx){ ds=0; break; }
+    const prev=T.seg; if(prev.wrap){ T.lap++; onLap(); }
+    pushTrail(); T.seg=nx; T.s=0; onEnter(nx,prev); pushTrail();
+  }
+  pushTrail();
+}
+function onLap(){
+  W.laps++;
+  const add=Math.min(3-W.frontWait.length,1+(R()<0.5?1:0)+(W.crossOpen?1:0));
+  for(let i=0;i<add;i++) W.frontWait.push(mkFolk());
+  log('lap',{laps:W.laps});
+}
+function onEnter(sg,prev){
+  T.queue=null;
+  if(!W.order.includes(sg.idx)) W.order.push(sg.idx);
+  W.route.push(sg.idx); if(W.route.length>140) W.route.shift();
+  switch(sg.id){
+    case 'jumpUp': W.seen.hi=1; W.seen.lastUp=1; log('jumpUp'); SFX.boing(2); break;
+    case 'hi': { const sl=sg.slots[0]; if(!sl.filled) fillSlot(sl,true);
+      CAR[0].sq=0.26; CAR[0].sv=0; SFX.bump();
+      for(let i=1;i<=T.cars;i++){ const k=i; later(OFF[k]/Math.max(T.v,120),()=>{CAR[k].sq=0.2;CAR[k].sv=0;}); } break; }
+    case 'ramp': W.seen.lo=1; W.seen.lastUp=0; log('down'); break;
+    case 'jumpDeck': W.seen.deck=1; log('deckJump'); SFX.boing(3); break;
+    case 'deck': CAR[0].sq=0.24; CAR[0].sv=0; SFX.bump(); break;
+    case 'ring': log('ring'); SFX.chime(3); break;
+    case 'back': log('backSide'); break;
+    case 'bridge': log('bridgeRun'); SFX.chime(9); break;
+    case 'termLine': log('termLine'); break;
+  }
+}
+function onArriveBlock(b){
+  const c=CAR[0];
+  if(b.kind==='station'){ startEvent(b.seg.id); return; }
+  if(b.kind==='terminal'){ startTerminal(); return; }
+  c.sq=-0.12; c.sv=5; c.lean=0.1; c.lv=-1.5; SFX.bump();
+  for(let i=1;i<=T.cars;i++){ const k=i; later(0.06*i,()=>{CAR[k].lean=0.06;}); }
+}
+function inTunnel(i){
+  const po=carPose(i), x=((po.x%L)+L+260)%L-260;
+  return Math.abs(po.y-YL)<20&&x>TUN.x0-20&&x<TUN.x1+20;
+}
+function updateTrain(dt){
+  T.boost=Math.max(0,T.boost-dt);
+  const sg=T.seg;
+  const bk=(sg.id==='lo'&&!W.towerDone)?0.5:1.7;
+  let target=CRUISE*sg.spd*zoneMul()*(1+bk*clamp(T.boost,0,1)), acc=ACC;
+  if(T.queue&&(sg.id==='start'||sg.id==='lo')){ target=Math.max(target,250); acc=900; }
+  if(T.event||TRIP.phase!=='play') target=0;
+  const blk=lookAhead(420); T.blk=blk;
+  if(blk){ const vmax=Math.sqrt(2*DEC*Math.max(0,blk.dist-0.4)); if(vmax<target) target=vmax; }
+  if(sg.jump) T.v=CRUISE*sg.spd;
+  else { const dv=target-T.v; T.v+=dv>0?Math.min(dv,acc*dt):Math.max(dv,-DEC*2.4*dt); if(T.v<0) T.v=0; }
+  let ds=T.v*dt; if(blk&&!sg.jump&&ds>blk.dist) ds=Math.max(0,blk.dist);
+  if(ds>0) advance(ds);
+  const stopped=blk&&blk.dist<1.2&&T.v<8&&!T.event;
+  if(stopped&&!T.waiting){ T.waiting=true; onArriveBlock(blk); }
+  if(!stopped&&T.v>14) T.waiting=false;
+}
+function updateCars(dt){
+  for(let i=0;i<=T.cars;i++){
+    const c=CAR[i];
+    if(c.launch>=0&&GT>=c.launch){ c.hv=c.launchV; c.launch=-1; c.sv-=7; }
+    if(c.hy<0||c.hv<0){
+      c.hv+=1500*dt; c.hy+=c.hv*dt;
+      if(inTunnel(i)&&c.hy<-14){ c.hy=-14; if(c.hv<0){ c.hv=-c.hv*0.15; c.sq=0.22; c.sv=0; if(i===0) SFX.tick(); } }
+      if(c.hy>=0){ c.hy=0; if(c.hv>150){ c.sq=Math.min(0.28,c.hv/1500); c.sv=0; if(i===0) SFX.squash(); } c.hv=0; }
+    }
+    c.sv+=(-300*c.sq-12*c.sv)*dt; c.sq=clamp(c.sq+c.sv*dt,-0.32,0.4);
+    c.lv+=(-120*c.lean-8*c.lv)*dt; c.lean+=c.lv*dt;
+    c.wa+=T.v*dt/(13*TS)+c.wv*dt; c.wv*=Math.pow(0.25,dt);
+    c.pop=Math.min(1,c.pop+dt*2.5);
+  }
+  /* 顔(二つ穴)の表情 */
+  F.gap+=(F.gapT-F.gap)*Math.min(1,dt*10);
+  F.rotV+=(-60*F.rot-5*F.rotV)*dt; F.rot+=F.rotV*dt;
+  F.shy=Math.max(0,F.shy-dt*0.8);
+  F.frown=Math.max(T.tickle*0.8,F.frown-dt*3);
+  F.look+=((F.lookT)-F.look)*Math.min(1,dt*4);
+  F.gapT=13-F.frown*6;
+  if(T.drop<0||T.dropV!==0){ T.dropV+=1400*dt; T.drop+=T.dropV*dt; if(T.drop>=0){ T.drop=0; if(T.dropV>200){ CAR.forEach(c=>{c.sq=0.25;c.sv=0;}); SFX.bump(); } T.dropV=0; } }
+}
+
+/* ---------------------------- shapes / particles ---------------------------- */
+const PROJ=[], PART=[], MOV=[]; const PMAX=170, JMAX=60;
+function part(x,y,vx,vy,life,k,size){ if(PART.length>=PMAX) PART.shift(); PART.push({x,y,vx,vy,life,max:life,k,size:size||3,rot:R()*TAU,vr:rnd(-5,5)}); }
+function proj(o){ if(PROJ.length>=JMAX) return null; o.t=0; o.rot=o.rot||0; o.emit=0; PROJ.push(o); return o; }
+function updateFx(dt){
+  for(let i=PROJ.length-1;i>=0;i--){
+    const p=PROJ[i]; p.t+=dt;
+    if(p.k==='free'){
+      p.vy+=900*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.rot+=p.vr*dt;
+      if(p.floor!=null&&p.y>p.floor&&p.vy>0){ p.y=p.floor; p.vy*=-0.45; p.vx*=0.7; }
+      if(p.t>p.dur){ PROJ.splice(i,1); for(let j=0;j<3;j++) part(p.x,p.y,rnd(-40,40),rnd(-60,-10),0.4,'dot',2); }
+      continue;
+    }
+    const f=clamp(p.t/p.dur,0,1), u=1-f;
+    const cx=(p.x0+p.x1)/2, cy=Math.min(p.y0,p.y1)-p.h;
+    const nx=u*u*p.x0+2*u*f*cx+f*f*p.x1, ny=u*u*p.y0+2*u*f*cy+f*f*p.y1;
+    const d=Math.hypot(nx-(p.x||p.x0),ny-(p.y||p.y0));
+    p.x=nx; p.y=ny; p.rot+=p.k==='roll'?d/(p.size*0.5)*(p.x1>=p.x0?1:-1):p.vr*dt||0;
+    p.emit-=dt; if(p.emit<=0){ p.emit=0.05; part(p.x,p.y,rnd(-15,15),rnd(-15,15),0.35,'dot',p.k==='roll'?1.6:2.2); }
+    if(f>=1){ PROJ.splice(i,1); try{ p.cb&&p.cb(); }catch(e){} }
+  }
+  for(let i=PART.length-1;i>=0;i--){
+    const q=PART[i]; q.life-=dt; if(q.life<=0){ PART.splice(i,1); continue; }
+    q.x+=q.vx*dt; q.y+=q.vy*dt; q.rot+=q.vr*dt;
+    if(q.k!=='ring'){ q.vx*=Math.pow(0.3,dt); q.vy=q.vy*Math.pow(0.3,dt)+(q.k==='dot'?40*dt:0); }
+  }
+  for(let i=MOV.length-1;i>=0;i--){
+    const m=MOV[i]; m.t+=dt; const f=clamp(m.t/m.dur,0,1);
+    const to=m.to(); m.x=lerp(m.x0,to.x,f); m.y=lerp(m.y0,to.y,f)-Math.sin(f*Math.PI)*m.h;
+    if(f>=1){ MOV.splice(i,1); try{ m.cb&&m.cb(); }catch(e){} }
+  }
+}
+function moveFolk(f,x0,y0,to,dur,h,cb){ MOV.push({f,x0,y0,x:x0,y:y0,to,dur,h,t:0,cb}); }
+function puff(power){
+  const fp=facePos(), po=carPose(0), dir=po.sx>=0?1:-1;
+  const n=Math.round(8+power*14);
+  for(let i=0;i<n;i++){ const a=rnd(-0.7,0.5)*(dir>0?1:-1)+(dir>0?0:Math.PI); const sp=rnd(120,320)*(0.6+power);
+    part(fp.x+dir*20,fp.y,Math.cos(a)*sp,Math.sin(a)*sp-30,rnd(0.25,0.5),'line',rnd(6,12)); }
+  part(fp.x+dir*24,fp.y,0,0,0.45,'ring',18+power*30);
+}
+function fillSlot(sl,silent){
+  if(sl.filled) return; sl.filled=true; sl.inc=false; sl.anim=0; sl.mine=true;
+  if(!silent) SFX.place(SLOTS.indexOf(sl));
+  for(let j=0;j<6;j++) part(sl.cx+rnd(-14,14),sl.cy,rnd(-60,60),rnd(-90,-20),0.4,'dot',2);
+  if(!W.seen.fill){ W.seen.fill=1; log('trackFilled'); }
+  log('fill',{lane:sl.lane});
+}
+function slotNear(sl,ref){ const x=wrapNear(sl.cx,ref); return {x,y:sl.cy}; }
+
+/* 先頭: くしゃみジャンプ */
+function frontTap(){
+  const p=T.ride.length, c0=CAR[0];
+  c0.sq=0.34; c0.sv=0; F.frown=1; F.rotV+=(R()-0.5)*4;
+  T.taps++; if(T.taps===1) log('firstTap');
+  if(GT-T.lastFront<0.7) T.streak++; else T.streak=1; T.lastFront=GT;
+  const thr=p>=1?Math.max(5,9-p):99;
+  let big=T.streak>=thr||(p>=1&&W.wheel<WHL.n&&wheelReach()&&R()<0.025);
+  T.tickle=big?0:clamp(T.streak/thr,0,1)*(p>=1?1:0.3);
+  if(big) T.streak=0;
+  const id=T.seg.id;
+  if(id==='start'&&T.s>380&&!gapsAhead(1,600,['mid']).length&&!T.queue) T.queue='up';
+  if(id==='lo'&&W.towerDone&&T.s>60) T.queue='deck';
+  const pre=big?0.32:0.08;
+  SFX.sneeze(p,big); if(T.tickle>0.3&&!big) SFX.hah(T.tickle);
+  later(pre,()=>sneezeBurst(p,big));
+}
+function sneezeBurst(p,big){
+  const c0=CAR[0];
+  c0.sv=-15*(big?1.4:1);
+  const inAir=T.seg.jump||T.queue==='up'||T.queue==='deck'||c0.hy<-2;
+  if(!inAir){ for(let i=0;i<=T.cars;i++){ CAR[i].launch=GT+i*0.075; CAR[i].launchV=-(big?560:320)*(1+p*0.02); } }
+  F.frown=0; F.gap=20; F.shy=1; F.rotV+=(R()<0.5?-1:1)*7;
+  const nSq=(1+(p>=2?1:0)+(p>=5?1:0))*(big?2:1);
+  const nTri=(1+(p>=3?1:0)+(p>=6?1:0))*(big?2:1);
+  frontSquares(nSq); frontTriangles(nTri,p,big); log('sneeze',{p,nSq,nTri,big});
+  if(big) bigSneeze(p);
+  puff(big?1.2:0.45+p*0.05);
+  laughAll(big?1:0.45);
+}
+function frontSquares(n){
+  const fp=facePos(), po=carPose(0), dir=po.sx>=0?1:-1;
+  const gs=gapsAhead(n,460,null);
+  for(let i=0;i<n;i++){
+    const sl=gs[i];
+    if(sl){ sl.inc=true; const t=slotNear(sl,fp.x);
+      proj({k:'sq',x0:fp.x,y0:fp.y,x1:t.x,y1:t.y-5,h:50+i*20,dur:0.34+i*0.12,size:20,vr:9,cb:()=>fillSlot(sl)}); }
+    else { const b=l2w(po,0,0,0);
+      proj({k:'free',x:fp.x,y:fp.y,vx:dir*rnd(70,150),vy:rnd(-260,-160),vr:rnd(-8,8),dur:1.1,size:16,floor:b.y-6,shape:'sq'}); }
+  }
+}
+function frontTriangles(n,p,big){
+  const fp=facePos(), dir=carPose(0).sx>=0?1:-1;
+  const sx=wrapNear(STA.x0,fp.x), dx=sx-fp.x, reach=300+p*90+(big?400:0);
+  for(let i=0;i<n;i++){
+    if(W.roof+W.roofInc<3&&dx>-280&&dx<reach){
+      const k=W.roof+W.roofInc; W.roofInc++;
+      const tx=sx+24+k*46, ty=STA.roofY-17;
+      proj({k:'tri',x0:fp.x,y0:fp.y,x1:tx,y1:ty,h:220+Math.abs(dx)*0.2,dur:0.8+Math.abs(dx)/1400+i*0.12,size:30,vr:6,cb:()=>roofArrive(k)});
+    } else {
+      proj({k:'free',x:fp.x,y:fp.y,vx:dir*rnd(160,300),vy:rnd(-620,-460)*(big?1.25:1),vr:rnd(-6,6),dur:1.6,size:20,shape:'tri'});
+    }
+  }
+}
+function roofArrive(k){
+  W.roofInc=Math.max(0,W.roofInc-1); W.roof=Math.min(3,W.roof+1); W.roofAnim[W.roof-1]=0;
+  SFX.click(W.roof); log('roofPiece',{n:W.roof});
+  const sx=wrapNear(STA.x0+70,carPose(0).x);
+  for(let j=0;j<8;j++) part(sx-46+(W.roof-1)*46,STA.roofY-17,rnd(-90,90),rnd(-90,30),0.5,'dot',2);
+  if(W.roof>=3){ later(0.25,()=>SFX.chime(5)); log('roofDone'); W.frontWait.forEach(f=>{f.hv=-200;f.wv+=6;}); }
+}
+function wheelReach(){ const fp=facePos(), wx=wrapNear(WHL.x,fp.x+300), dx=wx-fp.x, p=T.ride.length; return dx>-320&&dx<700+p*60; }
+function bigSneeze(p){
+  const fp=facePos(), reach=wheelReach();
+  log('bigSneeze',{p,reach});
+  const left=WHL.n-W.wheel-W.wheelInc, n=reach?Math.min(left,1+Math.floor(p/3)+(p>=6?1:0)):0;
+  const wx=wrapNear(WHL.x,fp.x+300);
+  for(let i=0;i<n;i++){
+    const j=W.wheel+W.wheelInc; W.wheelInc++;
+    const a=j/WHL.n*TAU-Math.PI/2, tx=wx+Math.cos(a)*WHL.r, ty=WHL.y+Math.sin(a)*WHL.r;
+    const dist=Math.hypot(tx-fp.x,ty-fp.y);
+    proj({k:'piece',x0:fp.x,y0:fp.y,x1:tx,y1:ty,h:260+i*18,dur:clamp(dist/620,0.9,2.8)+i*0.1,size:22,vr:5,cb:()=>wheelArrive(j)});
+  }
+  for(let i=n;i<4+Math.floor(p/2);i++) proj({k:'free',x:fp.x,y:fp.y,vx:rnd(-200,320),vy:rnd(-700,-420),vr:rnd(-6,6),dur:1.6,size:18,shape:'circ'});
+  for(let i=0;i<24;i++){ const a=R()*TAU; part(fp.x,fp.y,Math.cos(a)*rnd(150,380),Math.sin(a)*rnd(150,380),rnd(0.4,0.8),i%3?'line':'dot',rnd(4,10)); }
+  part(fp.x,fp.y,0,0,0.7,'ring',90);
+}
+function wheelArrive(j){
+  W.wheelInc=Math.max(0,W.wheelInc-1); W.wheel=Math.min(WHL.n,W.wheel+1); W.wheelAnim[W.wheel-1]=0;
+  SFX.place(j+2); log('wheelPiece',{n:W.wheel});
+  if(W.wheel>=WHL.n){ later(0.3,()=>SFX.chime(8)); log('wheelDone'); }
+}
+/* 後ろ: 加速と転がる四角 */
+function backTap(ci){
+  ci=clamp(ci||T.cars,1,T.cars);
+  const p=T.ride.length;
+  T.taps++; if(T.taps===1) log('firstTap');
+  T.boost=1; for(let i=0;i<=T.cars;i++){ CAR[i].wv+=36; }
+  const rc=CAR[ci]; rc.lean=-0.14; rc.lv=0; rc.sq=0.14; rc.sv=0; CAR[0].lean=-0.05;
+  F.lookT=-1; later(0.5,()=>{F.lookT=0;});
+  T.streak=0; T.tickle=0;
+  SFX.whirr(p);
+  if(T.seg.id==='start'&&T.s>380&&!gapsAhead(1,600,['mid']).length&&!T.queue) T.queue='down';
+  const n=1+(p>=2?1:0)+(p>=5?1:0);
+  const rp=carPose(ci), rb=l2w(rp,0,-14,CAR[ci].hy);
+  const onLo=T.seg.id==='lo'||T.seg.id==='ramp'||T.queue==='down';
+  const loGaps=SLOTS.filter(s=>s.lane==='lo'&&!s.filled&&!s.inc);
+  let rolled=0;
+  for(let i=0;i<n;i++){
+    let sl=null;
+    for(const s of loGaps){ if(s.inc) continue; const x=wrapNear(s.cx,rb.x); if(x-rb.x>-140&&x-rb.x<620){ sl=s; break; } }
+    if(sl){ sl.inc=true; const t=slotNear(sl,rb.x);
+      proj({k:'roll',x0:rb.x,y0:rb.y,x1:t.x,y1:t.y-9,h:24,dur:0.55+Math.abs(t.x-rb.x)/700+i*0.15,size:18,cb:()=>fillSlot(sl)}); rolled++; continue; }
+    if(onLo&&!W.towerDone&&W.pillar+W.pillarInc<3){
+      const k=W.pillar+W.pillarInc; W.pillarInc++;
+      const tx=wrapNear(TOW.x,rb.x), ty=TOW.base-TOW.sz*(k+0.5);
+      proj({k:'roll',x0:rb.x,y0:rb.y,x1:tx,y1:ty,h:60+k*20,dur:0.6+i*0.15,size:TOW.sz,cb:()=>pillarArrive()}); rolled++; continue;
+    }
+    const b=l2w(rp,0,0,0), dir=rp.sx>=0?1:-1;
+    proj({k:'free',x:rb.x,y:rb.y,vx:-dir*rnd(40,110),vy:rnd(-140,-60),vr:-dir*10,dur:0.9,size:14,floor:b.y-7,shape:'sq'});
+  }
+  SFX.roll(rolled?6:3);
+  for(let i=0;i<8;i++) part(rb.x+rnd(-20,20),rb.y+10,rnd(-120,-30)*(rp.sx>=0?1:-1),rnd(-40,0),0.35,'line',5);
+}
+function pillarArrive(){
+  W.pillarInc=Math.max(0,W.pillarInc-1); W.pillar=Math.min(3,W.pillar+1); W.pillarAnim[W.pillar-1]=0;
+  SFX.place(W.pillar+3); log('pillar',{n:W.pillar});
+  if(W.pillar>=3&&!W.towerDone){ W.towerDone=true; W.towerUp=0; later(0.2,()=>{SFX.bell();}); later(0.5,()=>SFX.chime(6)); log('towerUp'); }
+}
+function laughAll(s){
+  const all=[W.frontWait,W.backWait,T.ride,W.clockFolk,W.wheelFolk.map(w=>w.f)];
+  for(const arr of all) for(const f of arr){ f.wv+=rnd(4,9)*s*(R()<0.5?-1:1); if(f.hop>=0) f.hv=-rnd(90,170)*s*(f.k===4?1.4:0.8); }
+}
+function updateFolk(f,dt){
+  f.ph+=dt*(f.k===2?5:3.2);
+  f.wv+=(-90*f.wob-6*f.wv)*dt; f.wob+=f.wv*dt;
+  if(f.hop<0||f.hv<0){ f.hv+=1100*dt; f.hop+=f.hv*dt; if(f.hop>=0){f.hop=0;f.hv=0;} }
+}
+
+/* ---------------------------- station events ---------------------------- */
+function seatPos(k){ const ci=1+Math.floor(k/3), w=k%3; if(ci>T.cars) return carCenter(T.cars); const po=carPose(ci); return l2w(po,-20+20*w,-48,CAR[ci].hy+T.drop); }
+function folkSpot(kind,i,ref){
+  if(kind==='front') return {x:wrapNear(STA.x0+28+i*28,ref),y:STA.y-14};
+  if(kind==='back') return {x:wrapNear(STA.x0+40+i*24,ref),y:YB-11};
+  if(kind==='clock') return {x:wrapNear(DECK.x0+20+i*24,ref),y:YD-13};
+  return {x:ref,y:0};
+}
+function startEvent(id){
+  if(T.event) return;
+  const ev={kind:id,t:0,steps:[],end:0.4}; T.event=ev;
+  const step=(at,fn)=>{ ev.steps.push({at,fn,done:false}); ev.end=Math.max(ev.end,at+0.35); };
+  const ref=carPose(0).x;
+  if(id==='hi'){
+    const n=Math.min(W.frontWait.length,cap()-T.ride.length);
+    for(let i=0;i<n;i++) step(0.25+i*0.4,()=>{
+      const f=W.frontWait.shift(); if(!f) return; const from=folkSpot('front',0,ref); const seat=T.ride.length+T.boarding; T.boarding++;
+      moveFolk(f,from.x,from.y,()=>seatPos(seat),0.45,60,()=>{ T.boarding--; T.ride.push(f); SFX.pip(T.ride.length); const ci=1+Math.floor(seat/3); if(CAR[ci]){CAR[ci].sq=0.16;CAR[ci].sv=0;} });
+    });
+    step(0.25+n*0.4+0.4,()=>{ SFX.chime(4+Math.min(5,T.ride.length)); log('board',{n,ride:T.ride.length}); });
+  } else if(id==='back'){
+    let t0=0.2;
+    if(W.spare>0&&T.cars<3){
+      step(0.15,()=>{ W.push=1; W.spareAnim=0.001; W.spareTo=T.cars+1; SFX.roll(4); });
+      step(1.25,()=>{ T.cars++; const c=CAR[T.cars]; c.hy=0;c.hv=0;c.sq=0.3;c.sv=0;c.pop=0.65; W.spare--; W.spareAnim=0; W.push=0;
+        SFX.couple(); later(0.15,()=>SFX.chime(6)); log('connect',{cars:T.cars});
+        if(!W.bridge){ W.bridge=true; W.bridgeDraw=0; log('bridge'); } });
+      t0=1.7;
+    }
+    step(t0,()=>{
+      const n=Math.min(W.backWait.length,cap()-T.ride.length);
+      for(let i=0;i<n;i++) later(i*0.35,()=>{
+        const f=W.backWait.shift(); if(!f) return; const from=folkSpot('back',0,ref); const seat=T.ride.length+T.boarding; T.boarding++;
+        moveFolk(f,from.x,from.y,()=>seatPos(seat),0.45,50,()=>{ T.boarding--; T.ride.push(f); SFX.pip(T.ride.length); });
+      });
+      ev.end=Math.max(ev.end,t0+n*0.35+0.7);
+    });
+  } else if(id==='deck'){
+    const n=Math.min(T.ride.length,W.crossOpen?2:3); W.deckLap=W.laps;
+    for(let i=0;i<n;i++) step(0.2+i*0.35,()=>{
+      const k=T.ride.length-1; if(k<0) return; const f=T.ride.pop(); const from=seatPos(k); const idx=W.clockFolk.length+i*0;
+      moveFolk(f,from.x,from.y,()=>folkSpot('clock',Math.min(5,W.clockFolk.length),ref),0.45,60,()=>{ W.clockFolk.push(f); SFX.pip(3+W.clockFolk.length); });
+      void idx;
+    });
+    const t1=0.2+n*0.35+0.4;
+    step(t1,()=>{ W.handV=10+n*4; SFX.bell(); log('deliverTower',{n}); });
+    step(t1+1.3,()=>{ if(!W.crossOpen){ W.crossOpen=true; SFX.gate(); log('crossOpen'); } });
+    step(t1+2.0,()=>{
+      const list=W.clockFolk.splice(0); list.forEach((f,i)=>{ const from=folkSpot('clock',i,ref);
+        later(i*0.25,()=>moveFolk(f,from.x,from.y,()=>folkSpot('back',Math.min(5,W.backWait.length),ref),1.5,170,()=>{ W.backWait.push(f); SFX.pip(1); })); });
+    });
+  } else if(id==='wheelSt'){
+    const n=Math.min(T.ride.length,WHL.riders-W.wheelFolk.length-W.wheelInFlight);
+    const wx=wrapNear(WHL.x,ref);
+    for(let i=0;i<n;i++) step(0.2+i*0.35,()=>{
+      const k=T.ride.length-1; if(k<0) return; const f=T.ride.pop(); const from=seatPos(k); const g=((W.wheelFolk.length+W.wheelInFlight)*3)%WHL.n; W.wheelInFlight++;
+      moveFolk(f,from.x,from.y,()=>gondolaPos(g,wx),0.6,70,()=>{ W.wheelInFlight--; W.wheelFolk.push({f,g}); SFX.pip(4+W.wheelFolk.length); });
+    });
+    const t1=0.2+n*0.35+0.6;
+    step(t1,()=>{ W.wheelSpin=0.4+W.wheelFolk.length*0.2; W.termGoal=W.wheelFolk.length/WHL.riders; W.termGrow=true; SFX.chime(4+W.wheelFolk.length); SFX.sparkle(3+W.wheelFolk.length); log('deliverWheel',{n,riders:W.wheelFolk.length}); });
+    if(W.wheelFolk.length+n>=WHL.riders){ step(t1+3.1,()=>{ if(W.wheelFolk.length>=WHL.riders){ W.termOpen=true; SFX.sparkle(10); log('termOpen'); } }); }
+    else step(t1+1.6,()=>{});
+  }
+}
+function gondolaPos(g,wx){ const a=g/WHL.n*TAU-Math.PI/2+W.wheelRot; return {x:wx+Math.cos(a)*WHL.r,y:WHL.y+Math.sin(a)*WHL.r+20}; }
+function updateEvent(dt){
+  const ev=T.event; if(!ev) return; ev.t+=dt;
+  for(const st of ev.steps) if(!st.done&&ev.t>=st.at){ st.done=true; try{st.fn();}catch(e){} }
+  if(ev.t>=ev.end&&MOV.length===0&&T.boarding===0){ T.event=null; T.waiting=false; }
+}
+function updateWorld(dt){
+  for(let i=0;i<3;i++){ W.roofAnim[i]=Math.min(1,W.roofAnim[i]+dt*2.5); W.pillarAnim[i]=Math.min(1,W.pillarAnim[i]+dt*2.5); }
+  for(let i=0;i<WHL.n;i++) W.wheelAnim[i]=Math.min(1,W.wheelAnim[i]+dt*2);
+  for(const s of SLOTS) s.anim=Math.min(1,s.anim+dt*3);
+  if(W.towerDone) W.towerUp=Math.min(1,W.towerUp+dt*1.1);
+  W.hand+=(0.3+W.handV)*dt; W.handV*=Math.pow(0.4,dt);
+  W.gate+=((W.crossOpen?1:0)-W.gate)*Math.min(1,dt*3);
+  if(W.crossOpen) W.ringDraw=Math.min(1,W.ringDraw+dt*0.5);
+  if(W.bridge) W.bridgeDraw=Math.min(1,W.bridgeDraw+dt*0.55);
+  if(W.spareAnim>0) W.spareAnim=Math.min(1,W.spareAnim+dt/1.05);
+  W.wheelRot+=W.wheelSpin*0.45*dt;
+  if(W.termGrow) W.termDraw=Math.min(W.termGoal||0,W.termDraw+dt/2.5);
+  const lists=[W.frontWait,W.backWait,T.ride,W.clockFolk];
+  for(const a of lists) for(const f of a) updateFolk(f,dt);
+  for(const w of W.wheelFolk) updateFolk(w.f,dt);
+  for(const m of MOV) updateFolk(m.f,dt);
+  for(const k in W.wig){ W.wig[k]*=Math.pow(0.05,dt); if(W.wig[k]<0.01) delete W.wig[k]; }
+}
+
+/* ---------------------------- trip / constellation ---------------------------- */
+const TRIP={n:0,phase:'play',t:0,cons:null,from:null};
+const STKEY='gf-261104-14-stars';
+let STARS=[];
+function loadStars(){
+  try{
+    const raw=localStorage.getItem(STKEY); if(!raw) return [];
+    const o=JSON.parse(raw); if(!o||o.v!==1||!Array.isArray(o.c)) return [];
+    const out=[];
+    for(const c of o.c.slice(-6)){
+      if(!Array.isArray(c)||c.length<2||c.length>120) continue;
+      if(!c.every(k=>Number.isInteger(k)&&k>=0&&k<SEGS.length)) continue;
+      out.push(c.slice());
+    }
+    return out;
+  }catch(e){ return []; }
+}
+function saveStars(){ try{ localStorage.setItem(STKEY,JSON.stringify({v:1,c:STARS.slice(-6)})); return true; }catch(e){ return false; } }
+/* 区間IDの並び → 星座の形 (正規化した折れ線と星) */
+const CONS_CACHE=new Map();
+const XS=0.3;
+const STAR_AT={jumpUp:1,ramp:1,deck:1,back:1,bridge:1,termLine:1,hi:1,wheelSt:1};
+function consShape(ids){
+  const key=ids.join(','); if(CONS_CACHE.has(key)) return CONS_CACHE.get(key);
+  const lines=[], stars=[]; let lap=0;
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(const id of ids){ const sg=SEGS[id]; if(!sg) continue; const pl=[];
+    const n=Math.max(2,Math.round(sg.len/60)), step=Math.max(1,Math.floor(sg.pts.length/n));
+    const add=p=>pl.push({x:(p.x+lap*L)*XS,y:p.y,wx:p.x,wy:p.y});
+    for(let i=0;i<sg.pts.length;i+=step) add(sg.pts[i]); add(sg.pts[sg.pts.length-1]);
+    lines.push({pl,jump:sg.jump}); if(STAR_AT[sg.id]) stars.push(pl[pl.length-1]);
+    for(const p of pl){x0=Math.min(x0,p.x);y0=Math.min(y0,p.y);x1=Math.max(x1,p.x);y1=Math.max(y1,p.y);}
+    if(sg.wrap) lap++; }
+  if(!stars.length&&lines.length){ const l=lines[lines.length-1].pl; stars.push(l[l.length-1]); }
+  const sh={lines,stars,bb:[x0,y0,x1,y1]}; CONS_CACHE.set(key,sh); if(CONS_CACHE.size>40) CONS_CACHE.delete(CONS_CACHE.keys().next().value); return sh;
+}
+function startTerminal(){
+  if(TRIP.phase!=='play') return;
+  TRIP.phase='rise'; TRIP.t=0;
+  /* 星座は最後の5周ぶんの道筋 (周ごとに横へ並ぶので、上下の選び方で形が変わる) */
+  let ids=W.route.slice(), wraps=0;
+  for(let i=ids.length-1;i>=0;i--){ if(SEGS[ids[i]].wrap&&++wraps>=5){ ids=ids.slice(i+1); break; } }
+  ids=ids.slice(-110);
+  TRIP.cons=ids; TRIP.lap=T.lap; TRIP.camFrom={x:CAM.x,y:CAM.y,z:CAM.z};
+  SFX.bell(); later(0.6,()=>SFX.sparkle(14));
+  log('terminal',{segs:ids.length});
+}
+function finishTrip(){
+  STARS.push(TRIP.cons.slice()); if(STARS.length>6) STARS=STARS.slice(-6);
+  const ok=saveStars(); log('saved',{ok});
+  TRIP.n++; freshWorld(TRIP.n); resetTrain(); LATER.length=0; PROJ.length=0; MOV.length=0;
+  T.drop=-420; T.dropV=0; T.waiting=true;
+  W.order.push(SEG.start.idx); W.route.push(SEG.start.idx);
+  log('newTrip');
+}
+function updateTrip(dt){
+  if(TRIP.phase==='play') return;
+  TRIP.t+=dt; const t=TRIP.t;
+  if(TRIP.phase==='rise'&&t>6.4){ TRIP.phase='rebuild'; TRIP.t=0; finishTrip(); }
+  else if(TRIP.phase==='rebuild'&&t>2.2){ TRIP.phase='play'; TRIP.t=0; }
+}
+
+/* ---------------------------- camera ---------------------------- */
+const CAM={x:0,y:0,z:1};
+let CW=0,CH=0,DPR=1,LWK=1; const INS={t:0,r:0,b:0,l:0};
+const introView=()=>TRIP.n===0&&T.lap===0&&T.seg===SEG.start&&T.s<330&&W.laps===0;
+function baseZ(){
+  /* 最初の画面は汽車・途切れた線路・駅・トンネル・時計台が全部入る広さ、走り出したら少し寄る */
+  return Math.min(CW/(introView()?1040:560),CH/760);
+}
+function camTarget(){
+  const z=baseZ(), vw=CW/z, vh=CH/z, po=carPose(0), intro=introView();
+  /* 初期の二つ穴面を中央付近へ。右側には駅・トンネルが入る余白を残す。 */
+  const margin=(intro?vw*0.44:Math.min(vw*0.62,Math.max(Math.min(175,vw*0.2),OFF[T.cars]+75)))+INS.l/z;
+  const x=po.x+T.face*(vw/2-margin);
+  const top=-570, bot=300; let y;
+  if(intro) y=po.y-52*TS;
+  else if(bot-top<=vh) y=(top+bot)/2; else y=clamp(po.y-40+T.drop*0.3,top+vh/2,bot-vh/2);
+  return {x,y,z};
+}
+function updateCam(dt,snap){
+  const po=carPose(0);
+  T.face+=(po.sg-T.face)*Math.min(1,dt*1.2);
+  let tg=camTarget(), k=Math.min(1,dt*2.6);
+  if(TRIP.phase==='rise'){
+    const zA=Math.min(CW/2150,CH/900), f=ease(TRIP.t/1.6), cf=TRIP.camFrom;
+    tg={x:lerp(cf.x,740+TRIP.lap*L,f),y:lerp(cf.y,-110,f),z:lerp(cf.z,zA,f)}; k=1;
+  } else if(TRIP.phase==='rebuild') k=Math.min(1,dt*(1.5+TRIP.t*2));
+  if(snap) k=1;
+  CAM.x+=(tg.x-CAM.x)*k; CAM.y+=(tg.y-CAM.y)*k; CAM.z+=(tg.z-CAM.z)*k;
+}
+const w2s=(x,y)=>({x:(x-CAM.x)*CAM.z+CW/2,y:(y-CAM.y)*CAM.z+CH/2});
+const s2w=(x,y)=>({x:(x-CW/2)/CAM.z+CAM.x,y:(y-CH/2)/CAM.z+CAM.y});
+
+/* ---------------------------- drawing helpers ---------------------------- */
+const lw=u=>u*LWK;
+function stroke(w){ ctx.lineWidth=lw(w); ctx.stroke(); }
+function circ(x,y,r){ ctx.beginPath(); ctx.arc(x,y,Math.max(0.1,r),0,TAU); }
+function rectP(x,y,w,h){ ctx.beginPath(); ctx.rect(x,y,w,h); }
+function triP(x,y,w,h){ ctx.beginPath(); ctx.moveTo(x-w/2,y+h/2); ctx.lineTo(x+w/2,y+h/2); ctx.lineTo(x,y-h/2); ctx.closePath(); }
+function lineW(x0,y0,x1,y1,w){ ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); stroke(w); }
+function dashed(on){ ctx.setLineDash(on?[lw(5),lw(6)]:[]); }
+function blackFill(){ ctx.fillStyle='#000'; ctx.fill(); }
+function polyRange(sg,a,b){
+  if(b<=a) return false; const pts=sg.pts, cum=sg.cum; let started=false;
+  const pa=segAt(sg,a); ctx.moveTo(pa.x,pa.y); started=true;
+  for(let i=0;i<pts.length;i++){ if(cum[i]>a&&cum[i]<b) ctx.lineTo(pts[i].x,pts[i].y); }
+  const pb=segAt(sg,b); ctx.lineTo(pb.x,pb.y); return started;
+}
+function drawRail(sg,a,b,dep){
+  ctx.beginPath(); polyRange(sg,a,b); stroke(4.2*dep);
+  ctx.beginPath();
+  const st=18*dep; for(let s=Math.ceil(a/st)*st;s<=b;s+=st){ const p=segAt(sg,s); let nx=-p.ty,ny=p.tx; if(ny<0){nx=-nx;ny=-ny;}
+    ctx.moveTo(p.x+nx*2*dep,p.y+ny*2*dep); ctx.lineTo(p.x+nx*9*dep,p.y+ny*9*dep); }
+  stroke(2*dep);
+}
+function drawTrack(sg,limit){
+  if(!sg.draw) return;
+  const len=sg.len*(limit==null?1:limit); if(len<1) return;
+  const dep=depthAt(sg,0.5);
+  const cuts=sg.slots.filter(s=>!s.filled).map(s=>[s.s0,s.s1]).sort((p,q)=>p[0]-q[0]);
+  let a=0; for(const c of cuts){ if(c[0]>a) drawRail(sg,a,Math.min(c[0],len),dep); a=Math.max(a,c[1]); }
+  if(a<len) drawRail(sg,a,len,dep);
+  for(const sl of sg.slots){
+    if(!sl.filled){ const pu=0.5+0.5*Math.sin(GT*5+sl.s0); dashed(true); rectP(sl.cx-12,sl.cy-16-pu*3,24,24); stroke(1.4); dashed(false); continue; }
+    if(sl.mine){ const f=easeBack(sl.anim), h=lerp(26,8,f), w=lerp(22,34,f); rectP(sl.cx-w/2,sl.cy+2-(h-8)*(1-f),w,h); stroke(2.4); }
+  }
+}
+/* 背景の星 (視差) */
+const BGSTARS=[]; (function(){ let s=7; const r=()=>{ s=(s*16807)%2147483647; return s/2147483647; };
+  for(let i=0;i<90;i++) BGSTARS.push({x:r(),y:r(),z:0.4+r()*0.8,p:r()*TAU}); })();
+const CITY=[]; (function(){ let s=11; const r=()=>{ s=(s*48271)%2147483647; return s/2147483647; };
+  for(let x=-260;x<L-260;x+=70+r()*60){ CITY.push({x,w:30+r()*40,h:26+r()*60,t:r()<0.5}); } })();
+function drawSky(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,CW,CH);
+  ctx.fillStyle=WHITE;
+  for(const s of BGSTARS){
+    const x=((s.x*CW*1.6-CAM.x*CAM.z*0.08*s.z)%(CW*1.6)+CW*1.6)%(CW*1.6)-CW*0.3;
+    const y=s.y*CH*0.9-CAM.y*CAM.z*0.05*s.z;
+    const r=(0.6+0.7*s.z)*(0.75+0.25*Math.sin(GT*1.3+s.p));
+    ctx.beginPath(); ctx.arc(x,y,r,0,TAU); ctx.fill();
+  }
+}
+function worldXform(){ const z=CAM.z; ctx.setTransform(DPR*z,0,0,DPR*z,DPR*(CW/2-CAM.x*z),DPR*(CH/2-CAM.y*z)); }
+
+/* ---------------------------- structures ---------------------------- */
+function drawFolk(x,y,r,f,lean,depth){
+  const d=depth||1; r*=d;
+  const wob=f?f.wob:0, hop=f?f.hop:0, ph=f?f.ph:0;
+  ctx.save(); ctx.translate(x,y+hop); ctx.rotate((lean||0)+wob*0.25);
+  circ(0,0,r); blackFill(); stroke(2.6*d);
+  ctx.beginPath();
+  const hr=r*0.17;
+  if(!f||f.k===2){ ctx.moveTo(-r*0.3+hr,0); ctx.arc(-r*0.3,0,hr,0,TAU); ctx.moveTo(r*0.3+hr,0); ctx.arc(r*0.3,0,hr,0,TAU); }
+  else { for(const [a,b] of [[-1,-1],[1,-1],[-1,1],[1,1]]){ ctx.moveTo(a*r*0.28+hr,b*r*0.28); ctx.arc(a*r*0.28,b*r*0.28,hr,0,TAU); } }
+  stroke(1.8*d);
+  if(f&&f.k===2&&f.wave!==false){ const a=-0.9+Math.sin(ph)*0.7; lineW(r*0.8,-r*0.2,r*0.8+Math.cos(a)*r*0.9,-r*0.2+Math.sin(a)*r*0.9,2.2*d); }
+  ctx.restore();
+}
+function folkLean(x){ /* 次に押す車両のほうへ体を傾ける */
+  if(!HINT.target) return 0; const c=HINT.pos; if(!c) return 0; return clamp((c.x-x)/600,-0.35,0.35);
+}
+function drawStationA(ref){
+  const x0=STA.x0,x1=STA.x1,y=STA.y,ry=STA.roofY, wg=W.wig.sta||0;
+  /* 奥のホーム(細線) */
+  rectP(x0+6,YB+3,x1-x0-12,7); stroke(1.6);
+  lineW(x0+10,YB+10,x0+10,y-2,1.2); lineW(x1-10,YB+10,x1-10,y-2,1.2);
+  /* 予備の車両(引き込み線) */
+  lineW(STA.sideX-30,STA.sideY,STA.sideX+90,STA.sideY,1.6);
+  if(W.spare>0&&!(W.spareAnim>0)){ drawCarShape({x:STA.sideX+30,y:STA.sideY,rot:0,sx:1,d:0.74},1,null,0,-1); }
+  /* 手前のホームと柱 */
+  rectP(x0,y+4,x1-x0,12); stroke(3.4);
+  ctx.save(); ctx.translate((x0+x1)/2,y); ctx.rotate(Math.sin(GT*30)*wg*0.02); ctx.translate(-(x0+x1)/2,-y);
+  lineW(x0+8,y,x0+8,ry,4.6); lineW(x1-8,y,x1-8,ry,4.6); lineW(x0-6,ry,x1+6,ry,4.6);
+  for(let k=0;k<3;k++){
+    const cx=x0+24+k*46, cy=ry-17;
+    if(k<W.roof){ const f=easeBack(W.roofAnim[k]); ctx.save(); ctx.translate(cx,cy+(1-f)*-30); ctx.scale(f,f); triP(0,0,46,34); blackFill(); stroke(4.6); ctx.restore(); }
+    else { dashed(true); triP(cx,cy,46,34); stroke(1.4); dashed(false); }
+  }
+  ctx.restore();
+  /* 待っている乗客: 二つ穴は手をふり、四つ穴はぴょんぴょん */
+  W.frontWait.forEach((f,i)=>{ const sp=folkSpot('front',i,x0); if(f.k===4&&f.hop===0&&Math.sin(f.ph*1.3)>0.97) f.hv=-150;
+    drawFolk(sp.x,sp.y,11,f,folkLean(sp.x+ref)+(W.roof<3?-0.25:0),0.95); });
+  W.backWait.forEach((f,i)=>{ const sp=folkSpot('back',i,x0); f.wave=false; drawFolk(sp.x,sp.y,9,f,W.push?0.45:folkLean(sp.x+ref)*0.5+Math.sin(f.ph)*0.08,0.8); });
+}
+function drawTunnelTower(){
+  const x0=TUN.x0,x1=TUN.x1,top=TUN.top,wg=W.wig.tow||0;
+  ctx.beginPath(); ctx.moveTo(x0,YL+2); ctx.lineTo(x0,top+24); ctx.arcTo(x0,top,x0+24,top,24); ctx.lineTo(x1-24,top); ctx.arcTo(x1,top,x1,top+24,24); ctx.lineTo(x1,YL+2); stroke(5);
+  ctx.beginPath(); ctx.moveTo(x0+12,YL); ctx.lineTo(x0+12,top+30); ctx.arcTo(x0+12,top+12,x0+30,top+12,18); ctx.lineTo(x1-30,top+12); ctx.arcTo(x1-12,top+12,x1-12,top+30,18); ctx.lineTo(x1-12,YL); stroke(1.3);
+  const tx=TOW.x, sz=TOW.sz;
+  ctx.save(); ctx.translate(tx,TOW.base); ctx.rotate(Math.sin(GT*28)*wg*0.03); ctx.translate(-tx,-TOW.base);
+  for(let k=0;k<3;k++){ const yb=TOW.base-sz*(k+1);
+    if(k<W.pillar){ const f=easeBack(W.pillarAnim[k]); ctx.save(); ctx.translate(tx,yb+sz/2); ctx.scale(f,f); rectP(-sz/2,-sz/2,sz,sz); blackFill(); stroke(4.4); ctx.restore(); }
+    else { dashed(true); rectP(tx-sz/2,yb,sz,sz); stroke(1.3); dashed(false); }
+  }
+  const cy=TOW.base-sz*3-33;
+  if(W.towerDone){
+    const f=easeBack(W.towerUp); ctx.save(); ctx.translate(tx,TOW.base-sz*3); ctx.scale(1,f); ctx.translate(-tx,-(TOW.base-sz*3));
+    rectP(tx-sz/2-2,cy-4,sz+4,37); stroke(3); circ(tx,cy,31); blackFill(); stroke(4.6); triP(tx,cy-52,84,40); blackFill(); stroke(4.6);
+    lineW(tx,cy,tx+Math.cos(W.hand)*24,cy+Math.sin(W.hand)*24,3.6); lineW(tx,cy,tx+Math.cos(W.hand/12)*15,cy+Math.sin(W.hand/12)*15,4.6);
+    circ(tx,cy,3); stroke(3); ctx.restore();
+  } else { dashed(true); circ(tx,cy,31); stroke(1.3); triP(tx,cy-52,84,40); stroke(1.3); dashed(false); }
+  ctx.restore();
+  /* 時計台のデッキと踏切 */
+  rectP(DECK.x0,YD+4,DECK.x1-DECK.x0,10); stroke(W.towerDone?3.2:1.2);
+  const cxp=CROSS.x; lineW(cxp,YD+4,cxp,YD-70,3.4);
+  lineW(cxp-12,YD-82,cxp+12,YD-58,3); lineW(cxp-12,YD-58,cxp+12,YD-82,3);
+  const ga=-W.gate*Math.PI/2, gx=cxp, gy=YD-36;
+  for(let i=0;i<4;i++){ const a0=8+i*16, a1=a0+12; lineW(gx+Math.cos(ga)*a0,gy+Math.sin(ga)*a0,gx+Math.cos(ga)*a1,gy+Math.sin(ga)*a1,i%2?2:4.6); }
+  W.clockFolk.forEach((f,i)=>{ const sp=folkSpot('clock',i,0); f.wave=false; drawFolk(sp.x,sp.y,10,f,-0.3+Math.sin(W.hand*2+i)*0.12,0.95); });
+}
+function drawWheel(ref){
+  const x=WHL.x,y=WHL.y,r=WHL.r,wg=W.wig.whl||0;
+  lineW(x,y,x-68,0,4); lineW(x,y,x+68,0,4); lineW(x-80,0,x+80,0,2);
+  rectP(WHL.x-90,4,180,12); stroke(3);
+  ctx.save(); ctx.translate(x,y); ctx.rotate(Math.sin(GT*24)*wg*0.04);
+  if(W.wheel<WHL.n){ dashed(true); circ(0,0,r); stroke(1.3); dashed(false); }
+  circ(0,0,9); stroke(4);
+  for(let j=0;j<W.wheel;j++){
+    const f=easeBack(W.wheelAnim[j]), a0=j/WHL.n*TAU-Math.PI/2+W.wheelRot, a1=a0+TAU/WHL.n;
+    ctx.beginPath(); ctx.arc(0,0,r*f,a0,a1); stroke(4.6);
+    lineW(0,0,Math.cos(a0)*r*f,Math.sin(a0)*r*f,2.4);
+    const gx=Math.cos(a0)*r*f, gy=Math.sin(a0)*r*f;
+    lineW(gx,gy,gx,gy+10,2); circ(gx,gy+20,12*f); blackFill(); stroke(3);
+  }
+  ctx.restore();
+  W.wheelFolk.forEach(w=>{ const p=gondolaPos(w.g,x); w.f.wave=true; drawFolk(p.x,p.y,8,w.f,Math.sin(GT*2+w.g)*0.2,0.9); });
+  void ref;
+}
+function drawTerminal(){
+  if(W.termDraw<=0) return;
+  const x=TERM.x+40,y=TERM.y-30,on=W.termDraw>=1;
+  if(!on) dashed(true);
+  ctx.beginPath(); for(let i=0;i<10;i++){ const a=-Math.PI/2+i*Math.PI/5, rr=i%2?20:46; ctx.lineTo(x+Math.cos(a)*rr,y+Math.sin(a)*rr+Math.sin(GT*2)*3); } ctx.closePath(); stroke(on?4:1.3);
+  dashed(false);
+  if(W.termDraw>0) { rectP(TERM.x-6,TERM.y-26,10,26); stroke(3); }
+}
+function drawStatic(){
+  /* 地面と遠くの町(細線で奥行き) */
+  lineW(-260,YG,L-260,YG,1.2);
+  ctx.beginPath(); for(const b of CITY){ ctx.rect(b.x,YG-b.h,b.w,b.h); if(b.t){ ctx.moveTo(b.x-4,YG-b.h); ctx.lineTo(b.x+b.w/2,YG-b.h-22); ctx.lineTo(b.x+b.w+4,YG-b.h); } } stroke(1);
+  ctx.beginPath();
+  for(let x=-200;x<L-260;x+=120){ if(x>200&&x<620) continue; ctx.moveTo(x,10); ctx.lineTo(x,YG); }
+  for(let x=310;x<=590;x+=70){ ctx.moveTo(x,YH+14); ctx.lineTo(x,TUN.top-6); }
+  stroke(1);
+  /* 出発のホームと車止め */
+  rectP(S0.x0,4,S0.x1-S0.x0,12); stroke(3);
+  lineW(S0.x0-16,0,S0.x0-16,-70,3); circ(S0.x0-16,-80,9); stroke(3);
+  rectP(232,-24,8,24); stroke(3.4); lineW(226,-24,246,-24,3.4);
+}
+function drawWorldCopy(ox,pass){
+  ctx.save(); ctx.translate(ox,0);
+  ctx.strokeStyle=WHITE; ctx.lineCap='round'; ctx.lineJoin='round';
+  if(pass===0){
+    drawStatic();
+    /* 奥の線路(輪・裏側・空の橋) */
+    if(W.crossOpen) drawTrack(SEG.ring,W.ringDraw); else { dashed(true); ctx.beginPath(); polyRange(SEG.ring,0,50); stroke(1.3); dashed(false); }
+    drawTrack(SEG.back); drawTrack(SEG.backDown);
+    if(W.bridge){ drawTrack(SEG.bridge,W.bridgeDraw); if(W.bridgeDraw>=1) drawTrack(SEG.bridgeDown); }
+  } else {
+    drawStationA(ox);
+    for(const id of ['start','hi','hiDown','ramp','lo','loB','deck','deckOut','trunkA','wheelSt','trunkB']) drawTrack(SEG[id]);
+    if(W.termDraw>0){ drawTrack(SEG.termLine,W.termDraw);
+      if(W.termDraw<1){ const g=gondolaPos(0,WHL.x), tp=segAt(SEG.termLine,SEG.termLine.len*W.termDraw); lineW(g.x,g.y-20,tp.x,tp.y,1.4); } }
+    drawTunnelTower(); drawWheel(ox); drawTerminal();
+  }
+  ctx.restore();
+}
+
+/* ---------------------------- train drawing ---------------------------- */
+function wheelsP(xs,wa){
+  for(const wx of xs){ circ(wx,-13,13); blackFill(); stroke(4.2/TS); circ(wx,-13,5); stroke(3/TS);
+    ctx.beginPath(); for(let k=0;k<2;k++){ const a=wa+k*Math.PI/2; ctx.moveTo(wx+Math.cos(a)*6,-13+Math.sin(a)*6); ctx.lineTo(wx+Math.cos(a)*12,-13+Math.sin(a)*12); } stroke(2/TS); }
+}
+function drawCarShape(po,ci,c,hy,seat0){
+  const S=TS*po.d;
+  ctx.save(); ctx.translate(po.x,po.y+(hy||0)); ctx.rotate(po.rot+(c?c.lean:0)); ctx.scale(po.sx*S,S);
+  const sq=c?c.sq:0, pop=c?easeBack(c.pop):1;
+  if(pop<1) ctx.scale(pop,pop);
+  wheelsP(ci===0?[-20,18]:[-18,18],c?c.wa:0);
+  ctx.save(); ctx.scale(1+sq*0.55,1-sq);
+  if(ci===0){
+    lineW(-46,-26,40,-26,5/TS); lineW(-46,-26,-58,-26,3/TS); lineW(40,-34,40,-18,4/TS);
+    rectP(-48,-78,32,52); blackFill(); stroke(5/TS); rectP(-40,-68,16,16); stroke(3/TS); lineW(-54,-78,-12,-78,5/TS);
+    rectP(2,-99,13,17); blackFill(); stroke(4.4/TS);
+    /* 二つ穴の顔: しかめる(穴が寄る)→くしゃみ(開く)→照れ笑い(くるくる揺れ) */
+    const look=F.look*6, tilt=F.rot+Math.sin(GT*9)*F.shy*0.35, swell=1+T.tickle*0.08+Math.sin(GT*40)*T.tickle*0.03;
+    circ(10,-52,30*swell); blackFill(); stroke(7/TS);
+    ctx.save(); ctx.translate(10+look,-52+F.shy*3); ctx.rotate(tilt);
+    const g=F.gap/2, hr=5.6*(1-F.frown*0.3)+F.shy*0.6, jit=T.tickle*Math.sin(GT*55)*1.5;
+    circ(-g+jit,0,hr); stroke(3.8/TS); circ(g-jit,0,hr); stroke(3.8/TS);
+    ctx.restore();
+  } else {
+    lineW(32,-28,44,-28,3/TS);
+    rectP(-32,-72,64,48); blackFill(); stroke(5/TS); lineW(-37,-72,37,-72,5/TS);
+    for(let w=0;w<3;w++){ const wx=-20+20*w; circ(wx,-48,9.5); stroke(2.4/TS);
+      const f=seat0>=0?T.ride[seat0+w]:null; if(f) drawFolk(wx,-48+f.hop*0.15,8.5,f,f.wob*0.2,1/TS); }
+  }
+  ctx.restore(); ctx.restore();
+}
+function drawTrain(){
+  if(TRIP.phase==='rise'&&TRIP.t>1.6) return;
+  for(let i=T.cars;i>=0;i--){
+    const po=carPose(i); drawCarShape(po,i,CAR[i],CAR[i].hy+T.drop,i===0?-1:(i-1)*3);
+  }
+  if(W.spareAnim>0&&W.spareTo<=3){
+    const f=ease(W.spareAnim), tp=carPose(W.spareTo), sx=wrapNear(STA.sideX+30,tp.x);
+    const po={x:lerp(sx,tp.x,f),y:lerp(STA.sideY,tp.y,f)-Math.sin(f*Math.PI)*60,rot:lerp(0,tp.rot,f),sx:lerp(1,tp.sx,f),d:lerp(0.74,tp.d,f)};
+    drawCarShape(po,1,null,0,-1);
+  }
+}
+function trainBehind(){ return carPose(0).d<0.9; }
+
+/* ---------------------------- fx drawing ---------------------------- */
+function shapeP(k,size){ if(k==='sq'||k==='roll') rectP(-size/2,-size/2,size,size); else if(k==='tri') triP(0,0,size,size*0.8); else circ(0,0,size/2); }
+function drawFx(){
+  for(const p of PROJ){
+    ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot||0);
+    const k=p.k==='free'?p.shape:p.k;
+    if(p.k==='free'){ ctx.globalAlpha*=clamp((p.dur-p.t)/0.4,0,1); }
+    shapeP(k==='piece'?'circ':k,p.size); blackFill(); stroke(p.k==='free'?2.4:3.6);
+    if(k==='piece'){ lineW(-p.size/2,0,p.size/2,0,2); }
+    ctx.restore();
+  }
+  ctx.globalAlpha=1;
+  for(const q of PART){
+    const a=clamp(q.life/q.max,0,1);
+    if(q.k==='dot'){ circ(q.x,q.y,q.size*a+0.3); ctx.fillStyle=WHITE; ctx.fill(); }
+    else if(q.k==='line'){ const l=Math.hypot(q.vx,q.vy)||1; lineW(q.x,q.y,q.x-q.vx/l*q.size*a,q.y-q.vy/l*q.size*a,1.8); }
+    else if(q.k==='ring'){ circ(q.x,q.y,q.size*(1.4-a)); stroke(2.2*a); }
+  }
+  for(const m of MOV) drawFolk(m.x,m.y,10,m.f,Math.sin(m.t*12)*0.3,0.95);
+}
+
+/* ---------------------------- hint (言葉なし誘導) ---------------------------- */
+const HINT={target:null,pos:null,ci:0,idle:0,hand:-1,shown:false,pulse:0,handCi:0,mash:false,handMash:false};
+function suggest(){
+  HINT.mash=false;
+  if(T.event||TRIP.phase!=='play'||T.seg.jump) return null;
+  const id=T.seg.id, p=T.ride.length, b=T.blk;
+  if(b&&b.kind==='gap'&&b.dist<90) return (b.slot&&b.slot.lane==='lo')?'back':'front';
+  if(id==='start'&&(T.s>360||(b&&b.kind==='branch'))){
+    if(!W.seen.hi) return 'front';
+    if(!W.seen.lo) return 'back';
+    if(!W.towerDone) return 'back';
+    if(W.roof<3) return 'front';
+    if(p===0&&W.frontWait.length>0) return 'front';
+    if(p>0&&!W.crossOpen) return 'back';
+    if(W.termOpen&&W.bridge) return 'back';
+    if(W.backWait.length>0&&W.spare>0&&T.cars<3) return 'back';
+    if(p<cap()&&W.frontWait.length>0&&W.wheelFolk.length<WHL.riders) return 'front';
+    return W.seen.lastUp?'back':'front';
+  }
+  if(id==='hi'&&W.roof<3&&T.s<320) return 'front';
+  if((id==='lo'||id==='ramp')&&!W.towerDone) return 'back';
+  if(id==='lo'&&W.towerDone&&((p>0&&!W.crossOpen)||!W.seen.deck||W.backWait.length>0||(p>0&&W.spare>0&&T.cars<3)||(W.termOpen&&W.bridge))) return 'front';
+  if(p>=2&&W.wheel+W.wheelInc<WHL.n&&wheelReach()){ HINT.mash=true; return 'front'; }
+  return 'front';
+}
+function updateHint(dt){
+  const tg=suggest(); HINT.target=tg;
+  if(TRIP.phase!=='play'){ HINT.idle=0; HINT.shown=false; } else HINT.idle+=dt;
+  if(tg){ HINT.ci=tg==='front'?0:1; HINT.pos=carCenter(HINT.ci); }
+  HINT.pulse+=dt;
+  if(tg&&HINT.pulse>1.4){ HINT.pulse=0; const c=CAR[HINT.ci]; if(c.hy===0&&!T.event) c.hv=-80; }
+  if(!T.event&&T.boost<=0) F.lookT=tg==='back'?-0.9:(tg==='front'?0.5:0);
+  if(HINT.idle>4&&!HINT.shown&&tg&&TRIP.phase==='play'){ HINT.hand=0; HINT.shown=true; HINT.handCi=HINT.ci; HINT.handMash=HINT.mash; log('handDemo',{target:tg,mash:HINT.mash}); }
+  if(HINT.hand>=0){ const before=HINT.hand; HINT.hand+=dt; const presses=HINT.handMash?[1.0,1.35,1.7]:[1.0];
+    for(const pt of presses) if(before<pt&&HINT.hand>=pt){ const c=CAR[HINT.handCi]; c.sq=Math.max(c.sq,0.1); c.sv=0; }
+    if(HINT.hand>(HINT.handMash?3.0:2.3)) HINT.hand=-1; }
+}
+function drawHint(){
+  if(TRIP.phase!=='play') return;
+  if(HINT.target&&HINT.pos){
+    const c=HINT.pos, f=(GT*0.75)%1, d=carPose(HINT.ci).d;
+    circ(c.x,c.y,(48+f*42)*d); ctx.globalAlpha=1-f; stroke(3*(1-f)+0.6); ctx.globalAlpha=1;
+  }
+  if(HINT.hand>=0){
+    const t=HINT.hand, c=carCenter(HINT.handCi);
+    let ox=130,oy=170,pr=0;
+    const pe=HINT.handMash?2.0:1.3;
+    if(t<0.8){ const f=easeOut(t/0.8); ox*=1-f; oy*=1-f; } else if(t<pe){ ox=0;oy=0; const ph=HINT.handMash?((t-0.8)/0.35)%1:(t-0.8)/0.5; pr=Math.sin(ph*Math.PI); } else { const f=ease((t-pe)/1.0); ox*=f; oy*=f; }
+    const a=t>pe+0.3?clamp(1-(t-pe-0.3)/0.7,0,1):1;
+    if(pr>0.5){ circ(c.x,c.y,30+pr*14); ctx.globalAlpha=a*0.9; stroke(2.4); }
+    ctx.globalAlpha=a; drawHand(c.x+ox+4,c.y+oy+pr*8,1-pr*0.08); ctx.globalAlpha=1;
+  }
+}
+function drawHand(x,y,s){
+  ctx.save(); ctx.translate(x,y); ctx.scale(s,s); ctx.rotate(-0.35);
+  ctx.beginPath(); ctx.moveTo(-8,0); ctx.arc(0,0,8,Math.PI,0); ctx.lineTo(8,40); ctx.lineTo(-8,40); ctx.closePath(); blackFill(); stroke(3);
+  ctx.beginPath(); ctx.moveTo(-10,34); ctx.lineTo(-10,78); ctx.quadraticCurveTo(10,92,32,78); ctx.lineTo(34,40); ctx.quadraticCurveTo(26,30,18,40); ctx.quadraticCurveTo(12,30,6,36); ctx.lineTo(8,40); ctx.lineTo(-8,40); ctx.closePath(); blackFill(); stroke(3);
+  ctx.beginPath(); ctx.moveTo(-10,52); ctx.quadraticCurveTo(-26,44,-30,56); ctx.quadraticCurveTo(-22,66,-10,70); stroke(3);
+  ctx.restore();
+}
+
+/* ---------------------------- constellations ---------------------------- */
+function slotRect(i,n){
+  const cols=CW>700?6:3, top=INS.t+12, w=Math.min(160,(CW-INS.l-INS.r-24)/cols), h=w*0.42;
+  return {x:INS.l+12+(i%cols)*w+w/2,y:top+h/2+Math.floor(i/cols)*(h+6),w:w*0.86,h};
+}
+function consMap(sh,cx,cy,w,h){
+  const b=sh.bb, bw=(b[2]-b[0])||1, bh=(b[3]-b[1])||1, sc=Math.min(w/bw,h/bh), mx=(b[0]+b[2])/2, my=(b[1]+b[3])/2;
+  return p=>({x:cx+(p.x-mx)*sc,y:cy+(p.y-my)*sc});
+}
+function drawConsAt(ids,cx,cy,w,h,lwPx,starR,seed){
+  const sh=consShape(ids), m=consMap(sh,cx,cy,w,h);
+  ctx.strokeStyle=WHITE; ctx.lineCap='round'; ctx.lineJoin='round';
+  for(const ln of sh.lines){ ctx.beginPath(); ln.pl.forEach((p,i)=>{ const q=m(p); if(i) ctx.lineTo(q.x,q.y); else ctx.moveTo(q.x,q.y); });
+    ctx.setLineDash(ln.jump?[2,4]:[]); ctx.lineWidth=lwPx; ctx.stroke(); }
+  ctx.setLineDash([]); ctx.fillStyle=WHITE;
+  sh.stars.forEach((p,i)=>{ const q=m(p), r=starR*(0.75+0.35*Math.sin(GT*2.2+i*1.7+(seed||0))); drawStar(q.x,q.y,r); });
+}
+function drawStar(x,y,r){ ctx.beginPath(); for(let i=0;i<8;i++){ const a=i*Math.PI/4, rr=i%2?r*0.38:r; ctx.lineTo(x+Math.cos(a)*rr,y+Math.sin(a)*rr); } ctx.closePath(); ctx.fill(); }
+function drawSaved(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  const n=STARS.length+(TRIP.phase==='rise'?1:0);
+  STARS.forEach((ids,i)=>{ const r=slotRect(i,n); drawConsAt(ids,r.x,r.y,r.w,r.h,1.1,2.8,i); });
+}
+/* 終点: 線路が空へ巻き上がって星座になる */
+function drawRise(){
+  if(TRIP.phase!=='rise') return;
+  const t=TRIP.t, ids=TRIP.cons, sh=consShape(ids);
+  const bigW=Math.min(CW*0.86,680), bigH=Math.min(CH*0.4,300), bcx=CW/2, bcy=Math.max(INS.t+bigH/2+30,CH*0.34);
+  let cx=bcx,cy=bcy,w=bigW,h=bigH;
+  if(t>5.4){ const r=slotRect(STARS.length,STARS.length+1), f=ease((t-5.4)/1.0); cx=lerp(bcx,r.x,f); cy=lerp(bcy,r.y,f); w=lerp(bigW,r.w,f); h=lerp(bigH,r.h,f); }
+  const m=consMap(sh,cx,cy,w,h);
+  ctx.setTransform(DPR,0,0,DPR,0,0); ctx.strokeStyle=WHITE; ctx.fillStyle=WHITE; ctx.lineCap='round';
+  const nL=sh.lines.length;
+  sh.lines.forEach((ln,j)=>{
+    const st=1.5+(j/Math.max(1,nL))*1.0;
+    ctx.beginPath();
+    ln.pl.forEach((p,i)=>{
+      const a=w2s(p.wx+TRIP.lap*L,p.wy), b=m(p), f=ease((t-st-i*0.02)/1.3);
+      const sw=Math.sin(f*Math.PI);
+      const x=lerp(a.x,b.x,f)+Math.cos(f*5+j)*sw*30, y=lerp(a.y,b.y,f)-sw*110;
+      if(i) ctx.lineTo(x,y); else ctx.moveTo(x,y);
+    });
+    ctx.setLineDash(ln.jump?[3,5]:[]); ctx.lineWidth=lerp(3.4,t>5.4?lerp(2.6,1,ease((t-5.4)/1)):2.6,ease((t-st)/1.3)); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  if(t>3.0){ const a=clamp((t-3.0)/0.6,0,1); sh.stars.forEach((p,i)=>{ const q=m(p); drawStar(q.x,q.y,(t>5.4?lerp(8,2.6,ease((t-5.4)/1)):8)*a*(0.8+0.3*Math.sin(GT*3+i))); }); }
+  /* 汽車が星になる */
+  if(t>1.2&&t<4.2){
+    const f=ease((t-1.2)/2.6), tp=w2s(carPose(0).x,carPose(0).y-50), end=m(sh.stars[sh.stars.length-1]);
+    const x=lerp(tp.x,end.x,f), y=lerp(tp.y,end.y,f)-Math.sin(f*Math.PI)*80;
+    drawStar(x,y,lerp(16,7,f)*(1+0.2*Math.sin(GT*12)));
+    if(R()<0.5) { const ww=s2w(x,y); part(ww.x,ww.y,rnd(-30,30),rnd(-30,30),0.5,'dot',2); }
+  }
+}
+
+/* ---------------------------- input ---------------------------- */
+T.lastFrontAct=-9; T.lastBackAct=-9;
+function onTap(cx,cy){
+  HINT.idle=0; HINT.shown=false; HINT.hand=-1;
+  if(TRIP.phase!=='play'){ SFX.soft(); return; }
+  const w=s2w(cx,cy);
+  /* 当たり判定: 車体ごとの大きな円 + 先頭の前方と最後尾の後方へ張り出した円。いちばん近いものを採用 */
+  let best=-1,bd=1e9;
+  const test=(i,c,r)=>{ const d=Math.hypot(c.x-w.x,c.y-w.y); if(d<r&&d/r<bd){ bd=d/r; best=i; } };
+  for(let i=0;i<=T.cars;i++){
+    const po=carPose(i), r0=Math.max(78,30/CAM.z)*po.d, c=carCenter(i); test(i,c,r0);
+    if(i===0){ test(0,l2w(po,64,-40,CAR[0].hy+T.drop),r0*0.85); }
+    if(i===T.cars){ test(i,l2w(po,-58,-40,CAR[i].hy+T.drop),r0*0.75); }
+  }
+  if(best===0){ log('tap',{k:'front',h:HINT.target,sg:T.seg.id,s:Math.round(T.s)}); if(GT-T.lastFrontAct>0.09){ T.lastFrontAct=GT; frontTap(); } return; }
+  if(best>0){ log('tap',{k:'back',h:HINT.target,sg:T.seg.id,s:Math.round(T.s)}); if(GT-T.lastBackAct>0.12){ T.lastBackAct=GT; backTap(best); } return; }
+  log('tap',{k:'none'});
+  const bx=((w.x%L)+L+260)%L-260, y=w.y;
+  if(bx>STA.x0-20&&bx<STA.x1+20&&y>STA.roofY-45&&y<YH+24){ W.wig.sta=1; W.frontWait.forEach(f=>{f.hv=-120;}); SFX.soft(); return; }
+  if(bx>TUN.x0-10&&bx<TUN.x1+10&&y>-200&&y<YL){ W.wig.tow=1; SFX.tick(); return; }
+  if(Math.hypot(bx-WHL.x,y-WHL.y)<WHL.r+24){ W.wig.whl=1; SFX.soft(); return; }
+  part(w.x,w.y,0,0,0.3,'ring',7);
+}
+cv.addEventListener('pointerdown',e=>{ if(e.cancelable) e.preventDefault(); audioStart(); onTap(e.clientX,e.clientY); },{passive:false});
+cv.addEventListener('pointerup',()=>{ audioStart(); },{passive:true});
+cv.addEventListener('pointercancel',()=>{},{passive:true});
+const stopEv=e=>{ if(e.cancelable) e.preventDefault(); };
+document.addEventListener('touchstart',stopEv,{passive:false});
+document.addEventListener('touchmove',stopEv,{passive:false});
+document.addEventListener('touchend',e=>{ audioStart(); stopEv(e); },{passive:false});
+['gesturestart','gesturechange','gestureend','contextmenu','dblclick','selectstart','dragstart'].forEach(n=>document.addEventListener(n,stopEv,{passive:false}));
+window.addEventListener('wheel',stopEv,{passive:false});
+
+/* ---------------------------- frame ---------------------------- */
+function resize(){
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  CW=Math.max(1,window.innerWidth); CH=Math.max(1,window.innerHeight);
+  cv.width=Math.round(CW*DPR); cv.height=Math.round(CH*DPR);
+  try{ const cs=getComputedStyle(document.getElementById('safe'));
+    INS.t=parseFloat(cs.paddingTop)||0; INS.r=parseFloat(cs.paddingRight)||0; INS.b=parseFloat(cs.paddingBottom)||0; INS.l=parseFloat(cs.paddingLeft)||0; }catch(e){}
+  if(W) updateCam(0,TRIP.phase==='play');
+}
+window.addEventListener('resize',resize);
+window.addEventListener('orientationchange',()=>setTimeout(resize,150));
+function update(dt){
+  GT+=dt;
+  runLater();
+  if(TRIP.phase==='play'){ updateTrain(dt); updateEvent(dt);
+    if(T.event&&T.event.t>T.event.end+7){ T.event=null; T.boarding=0; T.waiting=false; } }
+  if(GT-T.lastFront>0.9) T.tickle=Math.max(0,T.tickle-dt*1.5);
+  updateCars(dt); updateWorld(dt); updateFx(dt); updateHint(dt); updateTrip(dt); updateCam(dt);
+}
+function draw(){
+  LWK=clamp(1/CAM.z,1,1.6);
+  drawSky(); drawSaved();
+  worldXform(); ctx.strokeStyle=WHITE; ctx.fillStyle=WHITE; ctx.lineCap='round'; ctx.lineJoin='round';
+  let wa=1; if(TRIP.phase==='rise') wa=1-ease((TRIP.t-1.6)/1.8); else if(TRIP.phase==='rebuild') wa=ease(TRIP.t/1.3);
+  const vw=CW/CAM.z, xl=CAM.x-vw/2, xr=CAM.x+vw/2, kc=Math.round((CAM.x-700)/L), ks=[];
+  for(let k=kc-2;k<=kc+2;k++){ if(1800+k*L>xl&&-500+k*L<xr) ks.push(k); }
+  ctx.globalAlpha=wa;
+  for(const k of ks) drawWorldCopy(k*L,0);
+  const behind=trainBehind();
+  ctx.globalAlpha=TRIP.phase==='rise'?1:wa;
+  if(behind) drawTrain();
+  ctx.globalAlpha=wa;
+  for(const k of ks) drawWorldCopy(k*L,1);
+  ctx.globalAlpha=TRIP.phase==='rise'?1:wa;
+  if(!behind) drawTrain();
+  drawFx(); drawHint();
+  ctx.globalAlpha=1;
+  drawRise();
+}
+let last=0, raf=0;
+function frame(ts){
+  raf=requestAnimationFrame(frame);
+  if(!last) last=ts; let dt=(ts-last)/1000; last=ts;
+  if(dt>0.05) dt=0.05; if(dt>0) update(dt);
+  draw();
+}
+function startLoop(){ if(!raf){ last=0; raf=requestAnimationFrame(frame); } }
+function stopLoop(){ if(raf){ cancelAnimationFrame(raf); raf=0; } }
+function auSuspend(){ try{ if(AU.ctx) AU.ctx.suspend().catch(()=>{}); }catch(e){} }
+function auResume(){ try{ if(AU.ctx&&!document.hidden) AU.ctx.resume().catch(()=>{}); }catch(e){} }
+document.addEventListener('visibilitychange',()=>{ if(document.hidden){ stopLoop(); auSuspend(); } else { startLoop(); auResume(); } });
+window.addEventListener('pagehide',()=>{ stopLoop(); auSuspend(); });
+window.addEventListener('pageshow',()=>{ if(!document.hidden){ startLoop(); auResume(); } });
+
+/* ---------------------------- start ---------------------------- */
+resize();
+STARS=loadStars();
+freshWorld(0); resetTrain(); T.waiting=true; W.order.push(SEG.start.idx); W.route.push(SEG.start.idx);
+updateCam(0,true);
+startLoop();
+
+/* 自動テスト用の読み取り口 (画面には何も出ない) */
+window.__gf14={
+  info(){ return {gt:+GT.toFixed(3),phase:TRIP.phase,trip:TRIP.n,seg:T.seg.id,s:+T.s.toFixed(1),v:+T.v.toFixed(1),lap:T.lap,cars:T.cars,ride:T.ride.length,
+    roof:W.roof,pillar:W.pillar,towerDone:W.towerDone,crossOpen:W.crossOpen,bridge:W.bridge,wheel:W.wheel,termOpen:W.termOpen,
+    frontWait:W.frontWait.length,backWait:W.backWait.length,hint:HINT.target,hand:HINT.hand>=0,stars:STARS.length,event:T.event?T.event.kind:null,
+    filled:SLOTS.map(s=>s.filled?1:0).join(''),sq:+CAR[0].sq.toFixed(3),hy:+CAR[0].hy.toFixed(1),parts:PART.length,proj:PROJ.length,
+    audio:AU.ctx?AU.ctx.state:'none',z:+CAM.z.toFixed(3),order:W.order.map(i=>SEGS[i].id)}; },
+  pos(which){ const i=which==='front'?0:(which==='back'?1:which); const c=carCenter(i); return w2s(c.x,c.y); },
+  log(){ return LOG.slice(); },
+  stars(){ return STARS.map(a=>a.slice()); },
+  advance(sec,step){ step=step||1/60; const n=Math.round(sec/step); for(let i=0;i<n;i++) update(step); draw(); },
+  w2s(x,y){ return w2s(x,y); }
+};
+})();
+</script>
+</body>
+</html>
