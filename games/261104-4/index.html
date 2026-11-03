@@ -108,7 +108,7 @@ function renderShape(T,o){
         if(sep>0.3&&xs<1.3/s+0.2){col=baked?((kn>0.4&&h1<0.4)?GOLD:CREAM):DOUGH;}
         else{
           let dn=false;
-          if(dents){for(let k=0;k<dents.length;k++){const q=dents[k];const ex=qx-q.x,ey=qy-q.y;const rr=q.r*(q.life/q.ml);if(ex*ex+ey*ey<rr*rr){dn=(ex*ex+ey*ey<1.6)?2:1;break;}}}
+          if(dents){for(let k=0;k<dents.length;k++){const q=dents[k];const ex=qx-q.x,ey=qy-q.y;const rr=q.r*Math.min(1,q.life/(q.fade||q.ml));if(ex*ex+ey*ey<rr*rr){dn=(ex*ex+ey*ey<1.6)?2:1;break;}}}
           if(dn){col=dn===2?GOLD:DOUGH;}
           else if(!baked){
             if(edge<rimW)col=DOUGH;
@@ -587,6 +587,7 @@ function onDown(x,y){
 }
 function onMove(x,y){
   const d=S.dough;if(!act)return;
+  if(Math.hypot(x-act.x0,y-act.y0)>4)act.press=null;
   if(act.kind==='edge'&&S.drag&&d){
     const v=boardView(d);const dd=Math.hypot(x-v.cx,y-v.cy);const ang=Math.atan2((y-v.cy)/v.sv,(x-v.cx)/v.s);
     S.drag.a=(ang+TAU)%TAU;let ext=(dd-act.d0)/v.s;ext=Math.round(ext/3)*3;
@@ -623,7 +624,10 @@ function onUp(cancel,x,y){
 }
 function pressAt(x,y,edge){
   const d=S.dough;const v=boardView(d);const q=toShape(v,x,y);
-  d.dents.push({x:q.qx,y:q.qy,r:edge?4:6,life:0.4,ml:0.4});if(d.dents.length>12)d.dents.shift();
+  // Keep a readable finger-sized dent, including touches in the forgiving edge hit area.
+  const r=edge?8:10,reach=Math.min(q.d,Math.max(0,sampleR(d.cur,q.a)-r/2));
+  const dent={x:Math.cos(q.a)*reach,y:Math.sin(q.a)*reach,r,life:1.8,ml:1.8,fade:0.6};
+  d.dents.push(dent);if(d.dents.length>12)d.dents.shift();if(act)act.press=dent;
   if(!edge)d.knead=Math.min(1,d.knead+0.065);
   d.sq=1;d.sqV=0;flour(x,y,edge?3:7);snd.knead(d.knead);
   S.stats.taps++;if(S.firstTapAt<0){S.firstTapAt=S.t;logE('first dough tap');}
@@ -838,8 +842,9 @@ function update(dt){
   if(d){
     const kn=d.knead,K=40+260*kn,C=12-5*kn;
     for(let i=0;i<N;i++){const a=-K*d.off[i]-C*d.vo[i];d.vo[i]+=a*dt;d.off[i]+=d.vo[i]*dt;if(Math.abs(d.off[i])<0.03&&Math.abs(d.vo[i])<0.05){d.off[i]=0;d.vo[i]=0;}}
-    for(let k=d.dents.length-1;k>=0;k--){d.dents[k].life-=dt;if(d.dents[k].life<=0)d.dents.splice(k,1);}
-    const ks=160+120*kn,cs=12-6*kn;d.sqV+=(-ks*d.sq-cs*d.sqV)*dt;d.sq+=d.sqV*dt;if(Math.abs(d.sq)<0.01&&Math.abs(d.sqV)<0.05){d.sq=0;d.sqV=0;}
+    for(let k=d.dents.length-1;k>=0;k--){if(!act||act.press!==d.dents[k])d.dents[k].life-=dt;if(d.dents[k].life<=0)d.dents.splice(k,1);}
+    const held=act&&act.press?0.75:0;
+    const ks=160+120*kn,cs=12-6*kn;d.sqV+=(-ks*(d.sq-held)-cs*d.sqV)*dt;d.sq+=d.sqV*dt;if(!held&&Math.abs(d.sq)<0.01&&Math.abs(d.sqV)<0.05){d.sq=0;d.sqV=0;}
     if(d.spin){d.spin.t+=dt;const p=d.spin.t/d.spin.dur;d.air=Math.sin(Math.PI*Math.min(1,p))*32;d.rot=ease(p)*TAU*d.spin.turns;if(Math.random()<0.4){const v=boardView(d);flour(v.cx+rnd(-10,10),v.cy+rnd(-5,5),1,10);}if(p>=1)landSpin();}
   }
   const A=S.anim;
