@@ -181,7 +181,7 @@ var SND={
 /* ===== world state ===== */
 var GEAR=0,BULB=1,DROP=2,NOTE=3;      // part types; box i is wired to device i whose native part is type i
 var CLOCK=0,LAMP=1,FOUNT=2,BELL=3;
-var CAP=5, MAXFLOOR=5, MAXPART=7, MAXPT=170;
+var CAP=5, MAXFLOOR=5, MAXPART=7, MAXPT=170; // MAXPT lowers on slow devices
 var L={};            // layout
 var T=0;             // game time (s)
 var parts=[], boxes=[], pulses=[], fx=[], fireworks=[];
@@ -1158,19 +1158,23 @@ function drawTraces(){
     chalkLine([t.x-t.w*0.8,t.y-2,t.x-t.w*0.2,t.y+3],'ws',2,0.5*a);chalkLine([t.x+t.w*0.1,t.y+2,t.x+t.w*0.8,t.y-3],'ws',2,0.5*a)}
 }
 /* ===== loop, resize, visibility ===== */
-var raf=0,lastNow=0,hidden=false;
+var raf=0,lastNow=0,hidden=false,slowT=0,lowQ=false,resumeT=0;
 function frame(now){
   raf=0;if(hidden)return;
-  var dt=(now-lastNow)/1000;lastNow=now;if(!(dt>0))dt=0.016;dt=Math.min(dt,0.05);
+  var dt=(now-lastNow)/1000;lastNow=now;if(!(dt>0))dt=0.016;
+  // adaptive quality: an old device that keeps missing frames drops to 1x pixels (once, no flip-flop)
+  if(!lowQ&&DPR>1&&T-resumeT>2){if(dt>0.026&&dt<0.25)slowT+=dt;else slowT=Math.max(0,slowT-dt*0.5);
+    if(slowT>2.5){lowQ=true;MAXPT=110;resize()}}
+  dt=Math.min(dt,0.05);
   T+=dt;
   try{update(dt);render()}catch(err){if(!frame.err){frame.err=1;console.warn(err)}}
   raf=requestAnimationFrame(frame);
 }
-function start(){if(!raf&&!hidden){lastNow=performance.now();raf=requestAnimationFrame(frame)}}
+function start(){if(!raf&&!hidden){lastNow=performance.now();resumeT=T;raf=requestAnimationFrame(frame)}}
 function resize(){
   var oL=L.left,oUW=L.UW,oFY=L.floorY,oTop=L.top;
   W=Math.max(200,window.innerWidth||document.documentElement.clientWidth);H=Math.max(200,window.innerHeight||document.documentElement.clientHeight);
-  DPR=Math.min(2,window.devicePixelRatio||1);
+  DPR=lowQ?1:Math.min(2,window.devicePixelRatio||1);
   cv.width=W*DPR|0;cv.height=H*DPR|0;cv.style.width=W+'px';cv.style.height=H+'px';
   layout();drawStatic();
   if(oUW){parts.forEach(function(p){var f=(p.x-oL)/oUW;p.x=L.left+clamp(f,0,1)*L.UW;p.tx=L.left+clamp((p.tx-oL)/oUW,0,1)*L.UW;
@@ -1192,7 +1196,7 @@ hidden=!!document.hidden;start();
 // read-only hooks for automated checks (no UI)
 window.__chalk={get phase(){return phase},get parts(){return parts},get boxes(){return boxes},get dev(){return dev},get L(){return L},get T(){return T},
   get leader(){return leader},get fest(){return fest},get firstFull(){return firstFull},get cycle(){return cycle},get held(){return held},get mem(){return mem},
-  get PT(){return PT.length},stats:stats,get colorAmt(){return colorAmt},
+  get PT(){return PT.length},get DPR(){return DPR},stats:stats,get colorAmt(){return colorAmt},
   debugSpawn:function(t){var p=spawnPart(false);if(p){stats.spawned[p.t]--;p.t=t;stats.spawned[t]++}return !!p},arches:arches,lampTarget:lampTarget,devBox:devBox};
 })();
 </script>
