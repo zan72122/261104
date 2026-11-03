@@ -1,0 +1,1444 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta name="robots" content="noindex,nofollow">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1d2a5c">
+<title>ちょきり！いろがえ前髪の紙サロン</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#1d2a5c;
+  touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+  overscroll-behavior:none;-webkit-tap-highlight-color:transparent;position:fixed;inset:0}
+canvas{position:fixed;left:0;top:0;display:block;touch-action:none;-webkit-touch-callout:none;outline:none}
+#sa{position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;
+  padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);
+  padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left)}
+</style>
+
+<script src="../../gf-playlog.js" defer></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="sa"></div>
+<script>
+(() => {
+'use strict';
+/* ===== palette: navy / white + pink / yellow (4 colors) ===== */
+const NAVY = '#1d2a5c', WHITE = '#fbf6ea', PINK = '#f2799e', YELLOW = '#f7c548';
+const SHADOW = 'rgba(5,9,30,0.55)';
+const TAU = Math.PI * 2;
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const saEl = document.getElementById('sa');
+let g = ctx;                      // current drawing context (swapped for photo snapshots)
+let W = 0, H = 0, DPR = 1;
+let SA = { t: 0, r: 0, b: 0, l: 0 };
+let LY = null;                    // layout
+let T = 0;                        // game time (s)
+
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < 0 ? 0 : t > 1 ? 1 : t * t * (3 - 2 * t);
+const easeOut = t => { t = clamp(t, 0, 1); return 1 - (1 - t) * (1 - t) * (1 - t); };
+const rnd = (a, b) => a + Math.random() * (b - a);
+const hash = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+/* ===== audio (Web Audio synth, starts on first touch) ===== */
+let AC = null, MG = null, NB = null;
+function audioInit() {
+  try {
+    if (AC) { if (AC.state === 'suspended') AC.resume().catch(() => {}); return; }
+    const C = window.AudioContext || window.webkitAudioContext;
+    if (!C) return;
+    AC = new C();
+    MG = AC.createGain(); MG.gain.value = 0.55; MG.connect(AC.destination);
+    const len = Math.floor(AC.sampleRate * 0.6);
+    NB = AC.createBuffer(1, len, AC.sampleRate);
+    const d = NB.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    if (AC.state === 'suspended') AC.resume().catch(() => {});
+  } catch (e) { AC = null; }
+}
+function tone(f, t0, dur, type, vol, f2) {
+  if (!AC) return;
+  try {
+    const o = AC.createOscillator(), gn = AC.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t0);
+    if (f2) o.frequency.exponentialRampToValueAtTime(Math.max(20, f2), t0 + dur);
+    gn.gain.setValueAtTime(0.0001, t0);
+    gn.gain.exponentialRampToValueAtTime(vol, t0 + 0.006);
+    gn.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(gn); gn.connect(MG); o.start(t0); o.stop(t0 + dur + 0.02);
+  } catch (e) {}
+}
+function noise(t0, dur, freq, q, vol, ftype, f2) {
+  if (!AC || !NB) return;
+  try {
+    const s = AC.createBufferSource(); s.buffer = NB;
+    const f = AC.createBiquadFilter(); f.type = ftype || 'bandpass'; f.frequency.setValueAtTime(freq, t0); f.Q.value = q;
+    if (f2) f.frequency.exponentialRampToValueAtTime(f2, t0 + dur);
+    const gn = AC.createGain();
+    gn.gain.setValueAtTime(0.0001, t0);
+    gn.gain.exponentialRampToValueAtTime(vol, t0 + 0.004);
+    gn.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    s.connect(f); f.connect(gn); gn.connect(MG);
+    s.start(t0, Math.random() * 0.3); s.stop(t0 + dur + 0.02);
+  } catch (e) {}
+}
+const SND = {
+  snip(p01, layer) {           // dry "chokki": pitch by height (higher = higher), timbre by layer
+    if (!AC) return; const t = AC.currentTime;
+    const base = 1500 + p01 * 1500 + layer * 500;
+    noise(t, 0.03, base * 1.7, 3, 0.45, 'bandpass');
+    tone(base, t, 0.025, 'square', 0.05, base * 0.6);
+    noise(t + 0.05, 0.05, base * 2.3, 4, 0.55, 'bandpass');
+    tone(base * (layer ? 1.5 : 1.2), t + 0.05, 0.06, 'triangle', 0.16, base * 0.55);
+  },
+  press() { if (!AC) return; const t = AC.currentTime; noise(t, 0.07, 1100, 0.9, 0.16, 'bandpass', 700); tone(330, t, 0.06, 'sine', 0.05, 260); },
+  pop() { if (!AC) return; const t = AC.currentTime; tone(520, t, 0.12, 'sine', 0.22, 900); noise(t, 0.04, 2500, 2, 0.12); },
+  soft() { if (!AC) return; const t = AC.currentTime; tone(260, t, 0.06, 'sine', 0.05, 220); },
+  chime(level) {               // success: clearly melodic, different from snips
+    if (!AC) return; const t = AC.currentTime;
+    const semis = [0, 4, 7, 12, 16, 19];
+    const n = 3 + Math.min(3, level | 0);
+    for (let i = 0; i < n; i++) {
+      const f = 1046.5 * Math.pow(2, semis[i] / 12);
+      tone(f, t + i * 0.075, 0.45, 'triangle', 0.17, 0);
+      tone(f * 2, t + i * 0.075, 0.18, 'sine', 0.04, 0);
+    }
+  },
+  boing() {
+    if (!AC) return; const t = AC.currentTime;
+    try {
+      const o = AC.createOscillator(), gn = AC.createGain(), l = AC.createOscillator(), lg = AC.createGain();
+      o.type = 'sine'; o.frequency.setValueAtTime(320, t); o.frequency.exponentialRampToValueAtTime(760, t + 0.3);
+      l.frequency.value = 18; lg.gain.value = 60; l.connect(lg); lg.connect(o.frequency);
+      gn.gain.setValueAtTime(0.0001, t); gn.gain.exponentialRampToValueAtTime(0.22, t + 0.01); gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+      o.connect(gn); gn.connect(MG); o.start(t); l.start(t); o.stop(t + 0.42); l.stop(t + 0.42);
+    } catch (e) {}
+  },
+  shutter() { if (!AC) return; const t = AC.currentTime; noise(t, 0.05, 3500, 1, 0.5, 'highpass'); tone(1400, t + 0.05, 0.04, 'square', 0.08); noise(t + 0.08, 0.09, 2200, 1, 0.35); },
+  whoosh() { if (!AC) return; const t = AC.currentTime; noise(t, 0.9, 400, 1.2, 0.35, 'bandpass', 2600); },
+  fanfare() {
+    if (!AC) return; const t = AC.currentTime;
+    const seq = [0, 4, 7, 12, 7, 12, 16];
+    seq.forEach((s, i) => tone(784 * Math.pow(2, s / 12), t + i * 0.09, 0.4, 'triangle', 0.16));
+    [0, 4, 7].forEach(s => tone(523 * Math.pow(2, s / 12), t + 0.65, 0.9, 'triangle', 0.1));
+  }
+};
+
+/* ===== layout ===== */
+function readSafe() {
+  const s = getComputedStyle(saEl);
+  SA = { t: parseFloat(s.paddingTop) || 0, r: parseFloat(s.paddingRight) || 0, b: parseFloat(s.paddingBottom) || 0, l: parseFloat(s.paddingLeft) || 0 };
+}
+function layout() {
+  readSafe();
+  W = Math.max(200, window.innerWidth); H = Math.max(200, window.innerHeight);
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  const portrait = H >= W;
+  const iw = W - SA.l - SA.r;
+  const wallTop = SA.t + 8;
+  const wallH = portrait ? clamp(H * 0.17, 76, 190) : clamp(H * 0.165, 78, 160);
+  const wallBottom = wallTop + wallH;
+  const floorH = portrait ? H * 0.21 : H * 0.19;
+  const floorTop = H - SA.b - floorH;
+  let U, hx, hy, mir;
+  if (portrait) {
+    U = Math.min(iw * 0.72 / 250, (floorTop - wallBottom + 10) / 395, 1.75);
+    hx = SA.l + iw * 0.39;
+    hy = floorTop + 18 * U - 270 * U;
+    const mw = iw * 0.33, mh = mw * 1.36;
+    mir = { x: W - SA.r - 8 - mw, y: floorTop + 8 - mh, w: mw, h: mh };
+  } else {
+    U = Math.min(iw * 0.3 / 250, (floorTop - wallBottom + 10) / 395, 1.75);
+    hx = SA.l + iw * 0.4;
+    hy = floorTop + 18 * U - 270 * U;
+    const mh = Math.min((floorTop - wallBottom) * 0.92, H * 0.52), mw = mh * 0.76;
+    const left = hx + 178 * U;
+    mir = { x: left + Math.max(0, (W - SA.r - left - mw) / 2), y: floorTop + 6 - mh, w: mw, h: mh };
+  }
+  const topLimit = wallBottom + 8 + 128 * U;
+  if (hy < topLimit) hy = topLimit;
+  const sw = Math.min(300 * U, iw - 16), sh = sw * 1.12;
+  const scx = portrait ? SA.l + iw / 2 : hx + 20 * U;
+  const stage = { x: scx - sw / 2, y: hy - 150 * U, w: sw, h: sh, gx: (scx - hx) / U };
+  const fh = wallH - 12, fw = fh * 0.88;
+  const pframe = { x: SA.l + 14, y: wallTop + 2, w: fw, h: fh };
+  LY = { portrait, wallTop, wallH, wallBottom, floorTop, floorH, U, hx, hy, mir, stage, pframe };
+  // re-place falling pieces after resize
+  for (const p of pieces) {
+    if (p.state === 'rest' || p.state === 'fall' || p.state === 'fly') { p.state = 'rest'; p.x = p.fx * W; p.y = floorY(p.fy); p.rot = p.restRot; }
+    if (p.state === 'drag') { p.state = 'rest'; p.x = p.fx * W; p.y = floorY(p.fy); }
+  }
+  particles.length = 0;
+  endGesture(true);
+}
+const floorY = fy => LY.floorTop + LY.floorH * (0.22 + 0.62 * fy);
+
+/* ===== geometry helpers ===== */
+function poly(p) { g.beginPath(); g.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]); g.closePath(); }
+function fillP(p, col) { poly(p); g.fillStyle = col; g.fill(); }
+function paper(p, col, sx, sy) { // paper with dark offset drop shadow
+  if (sx || sy) { g.save(); g.translate(sx, sy); fillP(p, SHADOW); g.restore(); }
+  fillP(p, col);
+}
+function ngon(cx, cy, rx, ry, n, rot, jit, seed) {
+  const p = []; rot = rot || 0;
+  for (let i = 0; i < n; i++) {
+    const a = rot + i / n * TAU;
+    const j = jit ? 1 + (hash(i + (seed || 0) * 17) - 0.5) * jit : 1;
+    p.push(cx + Math.cos(a) * rx * j, cy + Math.sin(a) * ry * j);
+  }
+  return p;
+}
+function star(cx, cy, r) { const p = []; for (let i = 0; i < 8; i++) { const a = i / 8 * TAU - Math.PI / 2; const rr = i % 2 ? r * 0.32 : r; p.push(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr); } return p; }
+function clipBelow(p, h) { // Sutherland–Hodgman: keep y >= h
+  const out = []; const n = p.length / 2;
+  for (let i = 0; i < n; i++) {
+    const cx = p[i * 2], cy = p[i * 2 + 1];
+    const j = (i - 1 + n) % n, px = p[j * 2], py = p[j * 2 + 1];
+    const cin = cy >= h, pin = py >= h;
+    if (cin) {
+      if (!pin) { const t = (h - py) / (cy - py); out.push(px + (cx - px) * t, h); }
+      out.push(cx, cy);
+    } else if (pin) { const t = (h - py) / (cy - py); out.push(px + (cx - px) * t, h); }
+  }
+  return out;
+}
+
+/* ===== girl (paper doll) ===== */
+const EYE_Y = 8, EYE_X = 36, BROW_Y = -24;
+const PEEK1 = 12;
+const PEEK2 = { curl: 20, patsun: 10, twin: 18 };
+const EYE_SNAP = -18, BROW_SNAP = -42;
+const DONE_THR = [44, -1, 30, -1, 44];
+const SDEF = [
+  { cx: -74, top: -54, w: 46, lean: -14, b: 76 },
+  { cx: -38, top: -70, w: 46, lean: -6, b: 60 },
+  { cx: 0, top: -76, w: 48, lean: 0, b: 62 },
+  { cx: 38, top: -70, w: 46, lean: 6, b: 60 },
+  { cx: 74, top: -54, w: 46, lean: 14, b: 76 }
+];
+const DRAW_ORDER = [0, 4, 1, 3, 2];
+const TIPS = ['round', 'point', 'wave'];
+const POSES = ['peace', 'cheeks', 'up', 'hip'];
+
+let cycle = 0;
+let girl = null;
+function makeGirl() {
+  const cols = Math.random() < 0.5 ? [PINK, YELLOW] : [YELLOW, PINK];
+  if (cycle > 0 && girl && girl.cols[0] === cols[0] && Math.random() < 0.7) cols.reverse();
+  const styles = shuffle(['curl', 'patsun', 'twin']);
+  const tip = TIPS[cycle % 3];
+  const group = [0, 0, 1, 2, 2];
+  const strands = SDEF.map((d, i) => ({
+    i, cx: d.cx, top: d.top, w: d.w, lean: d.lean,
+    style: styles[group[i]],
+    layers: [
+      { col: cols[0], b: d.b + rnd(-3, 3), db: 0, cut: false, visible: true, tip: tip, jag: 0 },
+      { col: cols[1], b: 0, db: 0, cut: false, visible: false, tip: 'scallop', jag: 0 },
+      { col: NAVY, b: 0, db: 0, cut: false, visible: false, tip: styles[group[i]], jag: 0, pop: 0 }
+    ],
+    press: 0, pressT: 0, spring: 0, springV: 0, swing: 0, swingT: 0, pull: 0, pullT: 0, hop: 0, lastCutT: -9
+  }));
+  for (const s of strands) { s.layers[0].db = s.layers[0].b; s.layers[1].b = s.layers[1].db = s.layers[0].b - 2; s.layers[2].b = s.layers[2].db = s.layers[0].b - 4; }
+  return {
+    cols: [cols[0], cols[1], NAVY], capeCol: cols[1], tip, strands, styles,
+    x: 0, bob: 0, tilt: 0, headX: 0, lookX: 0, lookY: 0, spinX: 1,
+    blinkNext: 1.5, blinkT: 0, wink: 0, winkT: 0, mood: 'neutral', blush: 0, browUp: 0,
+    hands: { lx: -58, ly: 236, rx: 58, ry: 236 }, pose: 'idle',
+    react: null, reactStart: 0, reactDur: 0,
+    pig: 0, pigV: 0, pigOn: false,
+    brushT: -1, brushIdx: 1, nextBrush: 0.7,
+    flags: { anyCut: false, eye: false, brow: false, asym: false, even: false, curl: {}, stripe: false, tri: false },
+    touchSide: 0, touchUntil: 0, giggleT: -9,
+    poseOrder: shuffle(POSES.slice()), poseIdx: 0, poseNext: 0,
+    sparkleEdgeT: -9
+  };
+}
+function cAt(s, y) { return s.cx + s.lean * (y - s.top) / 100; }
+function layerHW(s, k) { return s.w * (k === 1 ? 0.94 : (k === 2 ? 1.02 : 1)) / 2; }
+function tipDepth(s, k, tip) {
+  const hw = layerHW(s, k);
+  switch (tip) { case 'round': return s.w * 0.36; case 'point': return s.w * 0.5; case 'wave': return s.w * 0.22; case 'scallop': return hw * 0.5; case 'twin': return 15; default: return 0; }
+}
+function curlR(s) { const l1 = s.layers[1], l2 = s.layers[2]; return clamp((l2.db - l1.db) / 2, 2, 10); }
+function layerPts(s, k, b, tip, jag) {
+  const hw = layerHW(s, k), top = s.top - 12;
+  let d = tipDepth(s, k, tip);
+  if (tip === 'curl') d = curlR(s);
+  const yb = b - d, m = cAt(s, b);
+  const p = [cAt(s, top) - hw, top, cAt(s, yb) - hw, yb];
+  switch (tip) {
+    case 'round': for (let j = 1; j < 8; j++) { const a = Math.PI - j * Math.PI / 8; p.push(m + Math.cos(a) * hw, yb + Math.sin(a) * d); } break;
+    case 'point': p.push(m - hw * 0.15, b - d * 0.1, m, b, m + hw * 0.15, b - d * 0.1); break;
+    case 'wave': p.push(m - hw * 0.5, b, m, yb + d * 0.25, m + hw * 0.5, b); break;
+    case 'flat': p.push(m - hw * 0.35, b + jag * 1.3, m + hw * 0.25, b - jag); break;
+    case 'scallop':
+      for (const bump of [-0.5, 0.5]) { const bc = m + bump * hw; for (let j = 0; j <= 5; j++) { const a = Math.PI - j * Math.PI / 5; p.push(bc + Math.cos(a) * hw * 0.5, yb + Math.sin(a) * d); } }
+      break;
+    case 'twin': p.push(m - hw * 0.7, b, m - hw * 0.25, yb + 3, m, yb + 6, m + hw * 0.25, yb + 3, m + hw * 0.7, b); break;
+    default: break; // patsun / curl: straight
+  }
+  p.push(cAt(s, yb) + hw, yb, cAt(s, top) + hw, top);
+  return p;
+}
+function layerBottomAt(s, k, x) { // for coverage logic (uses target b)
+  const l = s.layers[k]; const hw = layerHW(s, k); const c = cAt(s, l.b);
+  const dx = Math.abs(x - c) / hw; if (dx > 1) return -999;
+  const d = tipDepth(s, k, l.tip);
+  if (l.tip === 'round') return l.b - d * (1 - Math.sqrt(Math.max(0, 1 - dx * dx)));
+  if (l.tip === 'point') return l.b - d * dx;
+  if (l.tip === 'scallop' || l.tip === 'wave' || l.tip === 'twin') return l.b - d * 0.5;
+  if (l.tip === 'curl') return l.b - 3;
+  return l.b;
+}
+function covered(gl, x, y) {
+  for (const s of gl.strands) {
+    if (y < s.top - 12) continue;
+    for (let k = 0; k < 3; k++) {
+      const l = s.layers[k]; if (!l.visible) continue;
+      const hw = layerHW(s, k); const c = cAt(s, y);
+      if (Math.abs(x - c) > hw) continue;
+      if (y < layerBottomAt(s, k, x)) return true;
+    }
+  }
+  return false;
+}
+function eyeVisible(gl, side) {
+  const ex = side * EYE_X; const pts = [[ex - 8, 4], [ex, 8], [ex + 8, 4], [ex, 0], [ex, 15]];
+  let c = 0; for (const q of pts) if (covered(gl, q[0], q[1])) c++;
+  return c <= 1;
+}
+function browVisible(gl, side) {
+  const ex = side * EYE_X; const pts = [[ex - 6, BROW_Y], [ex + 6, BROW_Y - 1], [ex, BROW_Y - 2]];
+  for (const q of pts) if (covered(gl, q[0], q[1])) return false;
+  return true;
+}
+function strandDone(s) { return s.layers[1].cut && s.layers[2].b <= DONE_THR[s.i]; }
+function allDone(gl) { return gl.strands.every(strandDone); }
+function strandLowest(s) { let m = s.layers[0].b; for (let k = 1; k < 3; k++) if (s.layers[k].visible) m = Math.max(m, s.layers[k].b); return m; }
+function updateAttach(s) {
+  const l0 = s.layers[0], l1 = s.layers[1], l2 = s.layers[2];
+  if (l1.visible && !l1.cut) l1.b = l0.b + PEEK1;
+  if (l2.visible) {
+    const lim = (s.i >= 1 && s.i <= 3) ? -2 : 999;
+    l2.b = Math.min(l1.b + PEEK2[s.style], Math.max(l1.b + 7, lim));
+  }
+}
+
+/* head transform: girl local units -> world */
+function girlOrigin() { return { ox: LY.hx + girl.x * LY.U, oy: LY.hy + girl.bob * LY.U }; }
+function toLocalHead(px, py) {
+  const o = girlOrigin(); const U = LY.U;
+  let x = (px - o.ox) / U, y = (py - o.oy) / U;
+  x /= (Math.abs(girl.spinX) < 0.2 ? 0.2 : girl.spinX);
+  // inverse head tilt around (0,90) and head shift
+  const a = -girl.tilt; const yy = y - 90;
+  const rx = x * Math.cos(a) - yy * Math.sin(a), ry = x * Math.sin(a) + yy * Math.cos(a);
+  return { x: rx - girl.headX, y: ry + 90 };
+}
+function headToWorld(x, y) {
+  const o = girlOrigin(); const U = LY.U; const a = girl.tilt;
+  x += girl.headX; const yy = y - 90;
+  const rx = x * Math.cos(a) - yy * Math.sin(a), ry = x * Math.sin(a) + yy * Math.cos(a) + 90;
+  return { x: o.ox + rx * girl.spinX * U, y: o.oy + ry * U };
+}
+
+/* ===== pieces, particles, decorations ===== */
+const pieces = [];      // cut paper pieces (floor / falling / drag / decor)
+const particles = [];   // crumbs and sparkles
+const confetti = [];    // floor material that grows
+const photos = [];      // wall photos (snapshots, immutable)
+const MAX_PARTICLES = 90, MAX_FLOOR = 34, MAX_CONF = 220, NSLOT = 14;
+const slots = new Array(NSLOT).fill(null);
+
+function addParticle(p) { if (particles.length >= MAX_PARTICLES) particles.shift(); particles.push(p); }
+function crumbs(x, y, col, n, dir) {
+  for (let i = 0; i < n; i++) addParticle({ kind: 'crumb', x, y, vx: rnd(-90, 90) + dir * 60, vy: rnd(-160, -30), r: rnd(1.6, 3.6) * LY.U, rot: rnd(0, TAU), vr: rnd(-12, 12), col: i % 3 === 0 ? WHITE : col, life: rnd(0.5, 0.9), t: 0 });
+}
+function sparkles(x, y, n, spread) {
+  for (let i = 0; i < n; i++) { const a = rnd(0, TAU), r = rnd(0.3, 1) * spread; addParticle({ kind: 'star', x: x + Math.cos(a) * r, y: y + Math.sin(a) * r, vx: Math.cos(a) * 40, vy: Math.sin(a) * 40 - 30, r: rnd(5, 10) * LY.U, life: rnd(0.6, 1.0), t: 0 }); }
+}
+
+function makePiece(s, k, h, oldB, oldTip, jag) {
+  const lay = s.layers[k];
+  const full = layerPts(s, k, oldB, oldTip, jag);
+  const pts = clipBelow(full, h);
+  if (pts.length < 6) return;
+  let cx = 0, cy = 0, n = pts.length / 2, minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  for (let i = 0; i < pts.length; i += 2) { cx += pts[i]; cy += pts[i + 1]; minX = Math.min(minX, pts[i]); maxX = Math.max(maxX, pts[i]); minY = Math.min(minY, pts[i + 1]); maxY = Math.max(maxY, pts[i + 1]); }
+  cx /= n; cy /= n;
+  const lp = []; for (let i = 0; i < pts.length; i += 2) lp.push(pts[i] - cx, pts[i + 1] - cy);
+  const len = oldB - h;
+  const kind = (oldTip === 'scallop' || (len < s.w * 1.0 && oldTip !== 'flat')) ? 'round' : 'strip';
+  const w = headToWorld(cx, cy);
+  const fx = clamp((w.x + rnd(-40, 40) * LY.U) / W, 0.05, 0.95);
+  const p = {
+    pts: lp, col: lay.col, kind, pw: maxX - minX, ph: maxY - minY, top: minY - cy, xl: minX - cx, xr: maxX - cx,
+    x: w.x, y: w.y, rot: girl.tilt, vx: rnd(-20, 20) + (w.x - LY.hx) * 0.15, vy: -rnd(40, 90) * LY.U, vr: 0,
+    phase: rnd(0, TAU), state: 'fall', fx, fy: Math.random(), restRot: rnd(-1.2, 1.2), born: T, slot: -1, hopT: 0, jig: 0
+  };
+  pieces.push(p);
+  // keep floor bounded: oldest resting pieces melt into the floor material
+  let floorCount = 0; for (const q of pieces) if (q.state !== 'decor') floorCount++;
+  while (floorCount > MAX_FLOOR) {
+    const idx = pieces.findIndex(q => q.state === 'rest');
+    if (idx < 0) break;
+    const q = pieces[idx]; for (let i = 0; i < 3; i++) addConfetti(q.x + rnd(-10, 10), q.y + rnd(-6, 6), q.col);
+    pieces.splice(idx, 1); floorCount--;
+  }
+}
+function addConfetti(x, y, col) {
+  if (confetti.length >= MAX_CONF) confetti.shift();
+  confetti.push({ fx: x / W, fy: clamp((y - LY.floorTop) / LY.floorH, 0.12, 0.96), r: rnd(1.5, 3.2), rot: rnd(0, TAU), col });
+}
+
+/* ===== frame (mirror / stage) and slots ===== */
+let stageT = 0, stageTarget = 0;
+function frameRect() {
+  const a = LY.mir, b = LY.stage, t = ease(stageT);
+  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), w: lerp(a.w, b.w, t), h: lerp(a.h, b.h, t) };
+}
+function frameThick(r) { return Math.min(r.w, r.h) * 0.12; }
+function slotPos(r, i) {
+  const t = frameThick(r);
+  let x, y, nx = 0, ny = 0;
+  if (i < 5) { x = r.x + r.w * (i + 1) / 6; y = r.y + t / 2; ny = -1; }
+  else if (i < 10) { x = r.x + r.w * (i - 4) / 6; y = r.y + r.h - t / 2; ny = 1; }
+  else if (i < 12) { x = r.x + t / 2; y = r.y + r.h * (i - 9) / 3; nx = -1; }
+  else { x = r.x + r.w - t / 2; y = r.y + r.h * (i - 11) / 3; nx = 1; }
+  return { x, y, nx, ny, len: t * 2.1 };
+}
+function decorCounts() { let strip = 0, round = 0; for (const p of slots) { if (!p) continue; if (p.kind === 'strip') strip++; else round++; } return { strip, round, n: strip + round }; }
+
+/* ===== game phase ===== */
+let phase = 'play';     // play | finale | pose | photo | next
+let phaseT = 0;
+let flashT = -9;
+let photoFly = null;    // {cv, t}
+let photoAppear = 1;
+let mirrorWob = 0, frameWob = 0;
+let lastInputT = 0, hintShownFor = -1, hint = null;
+let lure = null;
+let doneCheckT = -1;
+
+function reset() {
+  girl = makeGirl();
+  girl.x = 0;
+  phase = 'play'; phaseT = 0; stageT = 0; stageTarget = 0;
+}
+
+/* ===== reactions ===== */
+function react(name, dur) { girl.react = name; girl.reactStart = T; girl.reactDur = dur; }
+function reactAge() { return T - girl.reactStart; }
+function reacting(name) { return girl.react === name && reactAge() < girl.reactDur; }
+function successAt(level, x, y) { SND.chime(level); sparkles(x, y, 6 + level * 2, 70 * LY.U); }
+
+function evaluateDiscoveries(fromCut) {
+  const gl = girl, f = gl.flags;
+  const vl = eyeVisible(gl, -1), vr = eyeVisible(gl, 1);
+  const face = headToWorld(0, 0);
+  const prevAsym = f.asymNow;
+  f.asymNow = vl !== vr;
+  // 1. eyes appear
+  if ((vl || vr) && !f.eye) {
+    f.eye = true;
+    if (vl && vr) { react('even', 2.0); f.even = true; successAt(2, face.x, face.y); }
+    else { react('reveal', 1.6); successAt(1, face.x, face.y); }
+    gl.blinkT = 0.18; gl.blush = 1;
+  } else if (vl !== vr && !prevAsym && f.eye) {
+    // 2. one side short -> peek into mirror, tilt, wink
+    react('peek', 2.6); f.asym = true; SND.chime(1);
+  } else if (vl && vr && prevAsym) {
+    // 2b. both sides even -> pose changes
+    react('even', 2.0); f.even = true; successAt(2, face.x, face.y);
+  }
+  // asym on first reveal also counts
+  if (f.asymNow && !f.asym && f.eye && girl.react === 'reveal') { girl.react = 'peek'; girl.reactStart = T; girl.reactDur = 2.6; f.asym = true; }
+  // brows
+  if (browVisible(gl, -1) && browVisible(gl, 1) && !f.brow) { f.brow = true; if (!reacting('even') && !reacting('peek')) react('brow', 1.3); successAt(1, face.x, face.y - 30 * LY.U); }
+  // 4. stripes: left vs right different heights
+  const L0 = gl.strands.map(s => s.layers[0]);
+  if (!f.stripe) {
+    for (const a of [0, 1]) for (const b of [3, 4]) {
+      if (L0[a].cut && L0[b].cut && Math.abs(L0[a].b - L0[b].b) >= 14) f.stripeHit = true;
+    }
+    if (f.stripeHit) { f.stripe = true; gl.sparkleEdgeT = T; successAt(2, face.x, face.y - 40 * LY.U); if (!reacting('peek') && !reacting('even')) react('stripe', 1.6); }
+  }
+  if (!f.tri) {
+    const colsSeen = new Set();
+    for (const s of gl.strands) {
+      colsSeen.add(s.layers[0].col);
+      if (s.layers[1].visible && s.layers[1].b - s.layers[0].b >= 4) colsSeen.add(s.layers[1].col);
+      if (s.layers[2].visible && s.layers[2].b - s.layers[1].b >= 4) colsSeen.add(NAVY);
+    }
+    const hs = [];
+    const grp = [[0, 1], [2], [3, 4]];
+    for (const gi of grp) { const c = gi.filter(i => L0[i].cut).map(i => L0[i].b); if (c.length) hs.push(c); }
+    let distinct = false;
+    if (hs.length === 3) {
+      outer: for (const a of hs[0]) for (const b of hs[1]) for (const c of hs[2]) {
+        if (Math.abs(a - b) >= 10 && Math.abs(b - c) >= 10 && Math.abs(a - c) >= 10) { distinct = true; break outer; }
+      }
+    }
+    // after the left/right step, cutting the centre too and showing all three papers counts
+    if (colsSeen.size >= 3 && (distinct || (f.stripe && L0[2].cut && Math.abs(L0[2].b - L0[1].b) + Math.abs(L0[2].b - L0[3].b) >= 10))) { f.tri = true; gl.sparkleEdgeT = T; successAt(3, face.x, face.y - 40 * LY.U); react('tri', 2.0); }
+  }
+  if (fromCut && allDone(gl) && phase === 'play') doneCheckT = T + 0.7;
+}
+
+/* ===== cutting ===== */
+function chooseCut(s, h) {
+  const a = s.layers[0], b = s.layers[1];
+  const snap = 13;
+  if (b.visible && Math.abs(h - a.b) <= snap && b.b > a.b + 4) return [1, clamp(h, a.b + 1.5, b.b - 4)];
+  if (a.b > h + 4) return [0, Math.max(h, s.top + 12)];
+  if (b.visible && b.b > h + 4) return [1, h];
+  if (!b.visible && h < a.b + snap + 6) return [0, Math.max(s.top + 12, a.b - 15)];
+  if (b.visible && h < b.b + snap && b.b > a.b + 4) return [1, a.b + 1.5];
+  return null;
+}
+function snapHeight(y) {
+  if (y >= -20 && y <= 28) return EYE_SNAP;
+  if (y >= -50 && y < -20) return BROW_SNAP;
+  return y;
+}
+function doCut(s, rawY, dir) {
+  if (rawY < s.top - 8 || rawY > strandLowest(s) + 24) return false;
+  const h = snapHeight(rawY);
+  const c = chooseCut(s, h);
+  if (!c) return false;
+  const [k, hh] = c; const lay = s.layers[k];
+  if (lay.b - hh < 3) return false;
+  const oldB = lay.b, oldTip = lay.tip, oldJag = lay.jag;
+  makePiece(s, k, hh, oldB, oldTip, oldJag);
+  lay.b = hh; lay.db = hh; lay.cut = true; lay.tip = 'flat'; lay.jag = rnd(-1, 1);
+  if (k === 0) {
+    const l1 = s.layers[1];
+    if (!l1.visible) { l1.visible = true; l1.db = hh; }
+  } else if (k === 1) {
+    const l2 = s.layers[2];
+    if (!l2.visible) {
+      l2.visible = true; l2.db = hh; l2.pop = 1;
+      if (!girl.flags.curl[s.style]) {
+        girl.flags.curl[s.style] = true;
+        SND.boing(); react('curl', 1.3);
+        if (s.style === 'twin') { girl.pigOn = true; girl.pigV = 6; }
+        const w = headToWorld(cAt(s, hh), hh + 14);
+        sparkles(w.x, w.y, 5, 30 * LY.U);
+      }
+    }
+  }
+  updateAttach(s);
+  s.springV = -9; s.lastCutT = T; s.pullT = 0;
+  girl.flags.anyCut = true;
+  const w = headToWorld(cAt(s, hh), hh);
+  crumbs(w.x, w.y, lay.col, 7, dir);
+  addParticle({ kind: 'snip', x: w.x, y: w.y, r: s.w * 0.7 * LY.U, life: 0.18, t: 0, rot: girl.tilt });
+  const p01 = clamp((60 - hh) / 130, 0, 1);
+  SND.snip(p01, k);
+  // the girl reacts to where the scissors went
+  girl.lookX = clamp(cAt(s, hh) / 40, -1, 1); girl.lookY = -0.6;
+  evaluateDiscoveries(true);
+  return true;
+}
+
+/* ===== input ===== */
+let gest = null;  // {id, type, ...}
+function inHairZone(lx, ly) { return lx > -128 && lx < 128 && ly > -95 && ly < 112; }
+function strandAt(lx, ly) {
+  for (let o = DRAW_ORDER.length - 1; o >= 0; o--) {
+    const s = girl.strands[DRAW_ORDER[o]];
+    for (let k = 0; k < 3; k++) {
+      const l = s.layers[k]; if (!l.visible) continue;
+      if (ly < s.top - 12) continue;
+      if (Math.abs(lx - cAt(s, ly)) <= layerHW(s, k) + 4 && ly < l.b + 6) return s;
+    }
+  }
+  return null;
+}
+function pieceAt(px, py, allowFalling) {
+  let best = null, bd = 1e9;
+  for (let i = pieces.length - 1; i >= 0; i--) {
+    const p = pieces[i];
+    if (p.state === 'drag') continue;
+    if (p.state === 'fly' || (p.state === 'fall' && !allowFalling)) continue;
+    let x = p.x, y = p.y, rad;
+    if (p.state === 'decor') { const sp = slotPos(frameRect(), p.slot); x = sp.x; y = sp.y; rad = Math.max(24, sp.len * 0.6); }
+    else rad = Math.max(26, Math.max(p.pw, p.ph) * LY.U * 0.55);
+    const d = Math.hypot(px - x, py - y);
+    if (d < rad && d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+function rectHit(r, x, y, m) { return x > r.x - m && x < r.x + r.w + m && y > r.y - m && y < r.y + r.h + m; }
+function girlHit(px, py) {
+  const l = toLocalHead(px, py);
+  if (Math.hypot(l.x, l.y + 5) < 125) return true;
+  return l.x > -130 && l.x < 130 && l.y > 90 && l.y < 272;
+}
+
+function onDown(e) {
+  e.preventDefault();
+  audioInit();
+  if (gest) return; // ignore additional fingers: no double cuts, no stuck drags
+  try { cv.setPointerCapture(e.pointerId); } catch (er) {}
+  lastInputT = T; hint = null;
+  const px = e.clientX, py = e.clientY;
+  // 1. pieces (floor/decor) – falling ones only outside the hair zone
+  const lh = toLocalHead(px, py);
+  const hairZone = inHairZone(lh.x, lh.y) && (phase === 'play' || phase === 'pose');
+  let pc = pieceAt(px, py, !hairZone);
+  if (pc && phase === 'pose' && pc.state !== 'decor' && girlHit(px, py)) pc = null;   // the posing girl wins over floor pieces
+  if (pc && phase !== 'photo' && phase !== 'next') {
+    if (pc.state === 'decor') { slots[pc.slot] = null; pc.slot = -1; SND.press(); frameWob = 0.6; }
+    pc.state = 'drag'; pc.vx = 0; pc.vy = 0;
+    gest = { id: e.pointerId, type: 'piece', p: pc, px, py };
+    pc.x = px; pc.y = py - 26; pc.rot = 0;
+    SND.soft();
+    return;
+  }
+  if (phase === 'pose' && girlHit(px, py)) { gest = { id: e.pointerId, type: 'girl', px, py }; takePhoto(); return; }
+  if (phase === 'play' && hairZone) {
+    const s = strandAt(lh.x, lh.y);
+    gest = { id: e.pointerId, type: 'hair', path: [{ x: lh.x, y: lh.y, wx: px, wy: py }], swiping: false, used: new Set(), press: s, startX: px, startY: py, done: 0, dir: 0 };
+    if (s) { s.pressT = 1; s.press = Math.max(s.press, 0.35); SND.press(); }
+    girl.touchSide = lh.x < 0 ? -1 : 1; girl.touchUntil = T + 1.5;
+    girl.brushT = -1;
+    for (const st of girl.strands) st.swingT = 0;
+    return;
+  }
+  if (phase === 'pose' && hairZone) { const s = strandAt(lh.x, lh.y); if (s) { s.pressT = 1; s.press = 0.4; SND.press(); } gest = { id: e.pointerId, type: 'idle', press: s }; return; }
+  // irrelevant places: tiny local wobble only
+  gest = { id: e.pointerId, type: 'idle' };
+  const fr = frameRect();
+  if (rectHit(fr, px, py, 10)) { mirrorWob = 1; SND.soft(); }
+  else if (rectHit(LY.pframe, px, py, 6) || py < LY.wallBottom) { frameWob = 1; }
+  else if (phase === 'play' && girlHit(px, py)) { girl.giggleT = T; }
+  else if (py > LY.floorTop) { for (const p of pieces) if (p.state === 'rest' && Math.hypot(p.x - px, p.y - py) < 70) p.jig = 1; }
+}
+function processHairSegment(a, b) {
+  const G = gest;
+  for (const s of girl.strands) {
+    if (G.used.has(s.i)) continue;
+    const ca = cAt(s, a.y), cb = cAt(s, b.y);
+    const da = a.x - ca, db = b.x - cb;
+    if ((da <= 0 && db >= 0) || (da >= 0 && db <= 0)) {
+      if (da === db) continue;
+      const t = da === db ? 0 : da / (da - db);
+      const y = lerp(a.y, b.y, t);
+      G.used.add(s.i);
+      if (doCut(s, y, G.dir)) G.done++;
+    }
+  }
+}
+function onMove(e) {
+  if (!gest || e.pointerId !== gest.id) return;
+  e.preventDefault();
+  const px = e.clientX, py = e.clientY;
+  lastInputT = T;
+  if (gest.type === 'piece') { gest.p.x = px; gest.p.y = py - 26; gest.px = px; gest.py = py; return; }
+  if (gest.type !== 'hair') return;
+  const lh = toLocalHead(px, py);
+  const path = gest.path; const last = path[path.length - 1];
+  if (Math.hypot(lh.x - last.x, lh.y - last.y) < 1.5) return;
+  const pt = { x: lh.x, y: lh.y, wx: px, wy: py };
+  path.push(pt);
+  const dx = lh.x - path[0].x, dy = lh.y - path[0].y;
+  gest.dir = Math.sign(lh.x - last.x) || gest.dir;
+  if (!gest.swiping && Math.abs(dx) * LY.U > 16 && Math.abs(dx) >= Math.abs(dy) * 0.6) {
+    gest.swiping = true;
+    if (gest.press) gest.press.pressT = 0.5;
+    for (let i = 1; i < path.length; i++) processHairSegment(path[i - 1], path[i]);
+  } else if (gest.swiping) processHairSegment(last, pt);
+  gest.fx = lh.x; gest.fy = lh.y;
+}
+function onUp(e) {
+  if (!gest || e.pointerId !== gest.id) return;
+  e.preventDefault();
+  endGesture(e.type === 'pointercancel');
+}
+function endGesture(cancel) {
+  const G = gest; if (!G) return;
+  gest = null;
+  if (G.type === 'piece') {
+    const p = G.p;
+    if (!cancel && (phase === 'play' || phase === 'pose' || phase === 'finale') && rectHit(frameRect(), p.x, p.y, 46)) placeDecor(p);
+    else dropToFloor(p);
+  } else if (G.type === 'hair') {
+    // lenient short/diagonal swipes: overlap ≥ half a strand counts
+    if (!cancel && G.path.length > 1) {
+      const xs = G.path.map(q => q.x), ys = G.path.map(q => q.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs), my = ys.reduce((a, b) => a + b, 0) / ys.length;
+      const spanY = Math.max(...ys) - Math.min(...ys);
+      if ((maxX - minX) * LY.U > 14 && (maxX - minX) >= spanY * 0.6) {
+        for (const s of girl.strands) {
+          if (G.used.has(s.i)) continue;
+          const c = cAt(s, my), hw = s.w / 2;
+          const ov = Math.min(maxX, c + hw) - Math.max(minX, c - hw);
+          if (ov >= hw) { G.used.add(s.i); if (doCut(s, my, G.dir)) G.done++; }
+        }
+      }
+    }
+    if (G.press) { G.press.pressT = 0; G.press.springV += 5; }
+    for (const s of girl.strands) s.pullT = 0;
+    if (!G.done && G.press) { girl.giggleT = T; }
+  } else if (G.type === 'idle') {
+    if (G.press) { G.press.pressT = 0; G.press.springV += 5; }
+  }
+}
+function dropToFloor(p) {
+  p.state = 'fall'; p.vx = rnd(-20, 20); p.vy = -40; p.fx = clamp(p.x / W, 0.05, 0.95); p.fy = Math.random();
+  if (p.y > floorY(p.fy)) p.fy = clamp((p.y - LY.floorTop) / LY.floorH / 0.84 - 0.25, 0, 1);
+}
+function placeDecor(p) {
+  const r = frameRect();
+  let best = -1, bd = 1e9, bestAny = -1, bda = 1e9;
+  for (let i = 0; i < NSLOT; i++) {
+    const sp = slotPos(r, i); const d = Math.hypot(sp.x - p.x, sp.y - p.y);
+    if (!slots[i] && d < bd) { bd = d; best = i; }
+    if (d < bda) { bda = d; bestAny = i; }
+  }
+  if (best < 0) { best = bestAny; const old = slots[best]; if (old) { old.slot = -1; const sp = slotPos(r, best); old.x = sp.x; old.y = sp.y; dropToFloor(old); } }
+  slots[best] = p; p.state = 'decor'; p.slot = best; p.hopT = T;
+  SND.pop(); frameWob = 1; mirrorWob = 0.5;
+  const sp = slotPos(r, best); sparkles(sp.x, sp.y, 4, 16);
+  const dc = decorCounts();
+  if (!girl.flags.decor && dc.strip > 0 && dc.round > 0) {
+    girl.flags.decor = true;
+    successAt(2, sp.x, sp.y);
+    sparkles(LY.pframe.x + LY.pframe.w / 2, LY.pframe.y + LY.pframe.h / 2, 6, LY.pframe.w * 0.6);
+    react('decor', 1.6);
+  } else if (!reacting('decor')) { girl.lookX = 1; react('lookMirror', 0.9); }
+}
+
+cv.addEventListener('pointerdown', onDown, { passive: false });
+cv.addEventListener('pointermove', onMove, { passive: false });
+cv.addEventListener('pointerup', e => { audioInit(); onUp(e); }, { passive: false });
+document.addEventListener('touchend', () => audioInit(), { passive: true });
+cv.addEventListener('pointercancel', onUp, { passive: false });
+cv.addEventListener('lostpointercapture', e => { if (gest && e.pointerId === gest.id) endGesture(true); });
+const stop = e => { e.preventDefault(); };
+document.addEventListener('touchmove', stop, { passive: false });
+document.addEventListener('touchstart', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+document.addEventListener('gesturestart', stop, { passive: false });
+document.addEventListener('gesturechange', stop, { passive: false });
+document.addEventListener('contextmenu', stop);
+document.addEventListener('dblclick', stop, { passive: false });
+document.addEventListener('selectstart', stop);
+window.addEventListener('blur', () => endGesture(true));
+
+/* ===== photo ===== */
+function takePhoto() {
+  if (phase !== 'pose') return;
+  phase = 'photo'; phaseT = 0; flashT = T;
+  SND.shutter();
+  const st = LY.stage;
+  const pw = 220, ph = Math.round(220 * st.h / st.w);
+  const oc = document.createElement('canvas'); oc.width = pw; oc.height = ph;
+  const oc2 = oc.getContext('2d');
+  const k = pw / st.w;
+  const saved = g; g = oc2;
+  try {
+    g.setTransform(k, 0, 0, k, -st.x * k, -st.y * k);
+    g.fillStyle = NAVY; g.fillRect(st.x, st.y, st.w, st.h);
+    drawStageBackdrop(st, 1);
+    drawGirl(false);
+    drawFrame(st, true, 1);
+  } catch (e) {}
+  g = saved;
+  photoFly = { cv: oc, t: 0 };
+  girl.flags.photo = true;
+}
+
+/* ===== update ===== */
+function updateGirl(dt) {
+  const gl = girl; const f = gl.flags;
+  const eyesL = eyeVisible(gl, -1), eyesR = eyeVisible(gl, 1);
+  // strands
+  for (const s of gl.strands) {
+    s.press += (s.pressT - s.press) * Math.min(1, dt * 45);
+    s.springV += (-150 * s.spring - 9 * s.springV) * dt; s.spring += s.springV * dt;
+    s.swing += (s.swingT - s.swing) * Math.min(1, dt * 9);
+    s.pull += (s.pullT - s.pull) * Math.min(1, dt * 18);
+    for (let k = 0; k < 3; k++) { const l = s.layers[k]; l.db += (l.b - l.db) * Math.min(1, dt * 14); if (l.pop) l.pop = Math.max(0, l.pop - dt * 2.2); }
+  }
+  // pull ahead of the moving finger
+  if (gest && gest.type === 'hair' && gest.swiping && gest.fx !== undefined) {
+    for (const s of gl.strands) {
+      if (gest.used.has(s.i)) { s.pullT = 0; continue; }
+      const d = cAt(s, gest.fy) - gest.fx;
+      s.pullT = (Math.sign(d) === gest.dir && Math.abs(d) < 46 && gest.fy > s.top && gest.fy < strandLowest(s)) ? gest.dir * (1 - Math.abs(d) / 46) * 0.16 : 0;
+    }
+  }
+  // blink
+  gl.blinkNext -= dt;
+  if (gl.blinkNext <= 0) { gl.blinkT = 0.14; gl.blinkNext = rnd(2.0, 4.2); }
+  gl.blinkT = Math.max(0, gl.blinkT - dt);
+  // brush bangs aside (autonomous, while eyes covered)
+  if (phase === 'play' && !eyesL && !eyesR && !gest && gl.brushT < 0) {
+    gl.nextBrush -= dt;
+    if (gl.nextBrush <= 0 && !hint) { gl.brushT = 0; gl.brushIdx = Math.random() < 0.5 ? 1 : 3; gl.nextBrush = rnd(7, 9); }
+  }
+  if (gl.brushT >= 0) {
+    gl.brushT += dt;
+    const s = gl.strands[gl.brushIdx], side = gl.brushIdx < 2 ? 1 : -1;
+    s.swingT = (gl.brushT > 0.35 && gl.brushT < 1.15) ? side * 0.42 : 0;
+    if (Math.abs(gl.brushT - 0.62) < dt) gl.blinkT = 0.16;
+    if (gl.brushT > 1.15 && gl.brushT - dt <= 1.15) { s.springV += 7; SND.press(); }
+    if (gl.brushT > 1.6) gl.brushT = -1;
+  }
+  // targets
+  let pose = 'idle', mood = (eyesL || eyesR) ? 'smile' : 'neutral', tilt = 0, headX = 0, lookX = 0, lookY = 0, wink = 0, browUp = 0, blushT = f.eye ? 0.35 : 0;
+  if (lure) { lookX = lure.lx; lookY = lure.ly; }
+  if (gl.brushT >= 0) { pose = 'brush'; }
+  if (T < gl.touchUntil) { lookX = gl.touchSide; lookY = -0.2; tilt = gl.touchSide * 0.05; headX = gl.touchSide * 3; }
+  if (T - gl.giggleT < 0.7) { mood = (eyesL || eyesR) ? 'happy' : 'o'; tilt += Math.sin((T - gl.giggleT) * 20) * 0.03; }
+  const ra = reactAge(), live = gl.react && ra < gl.reactDur;
+  const ms = LY.mir.x + LY.mir.w / 2 > LY.hx ? 1 : -1;
+  if (live) {
+    switch (gl.react) {
+      case 'reveal': mood = 'happy'; blushT = 1; pose = 'shy'; lookY = -0.3; if (ra > 0.9) mood = 'smile'; break;
+      case 'brow': browUp = 1; mood = 'happy'; lookY = -0.8; break;
+      case 'peek': pose = 'peek'; tilt = ms * 0.11; headX = ms * 5; lookX = ms; mood = 'smile';
+        if (ra > 0.6 && ra < 1.7) wink = eyesL ? -1 : 1; break;   // wink with the visible eye
+      case 'even': pose = 'even'; mood = 'happy'; blushT = 0.6; browUp = 0.6; break;
+      case 'curl': lookY = -1; mood = ra < 0.4 ? 'o' : 'happy'; browUp = 0.8; break;
+      case 'stripe': lookX = ms; mood = 'smile'; tilt = ms * 0.06; pose = 'shy'; break;
+      case 'tri': pose = 'clap'; mood = 'happy'; blushT = 0.8; break;
+      case 'decor': lookX = ms; pose = 'even'; mood = 'happy'; break;
+      case 'lookMirror': lookX = ms; break;
+    }
+  }
+  if (phase === 'finale') {
+    pose = 'up'; mood = 'happy';
+  } else if (phase === 'pose' || phase === 'photo') {
+    if (phase === 'pose' && T > gl.poseNext) { gl.poseIdx = (gl.poseIdx + 1) % gl.poseOrder.length; gl.poseNext = T + 1.8; }
+    pose = gl.poseOrder[gl.poseIdx]; mood = 'happy'; lookX = 0; lookY = 0; blushT = 0.6;
+    if (pose === 'peace') { wink = 1; tilt = -0.08; mood = 'smile'; }
+    if (pose === 'hip') tilt = 0.1;
+    if (pose === 'up') browUp = 1;
+  } else if (phase === 'next') { pose = 'wave'; mood = 'happy'; }
+  gl.pose = pose; gl.mood = mood;
+  gl.wink = wink;
+  const hold = gest && gest.type === 'hair' && gest.swiping;   // keep the head still while the scissors are on her bangs
+  const k = hold ? 0 : Math.min(1, dt * 10);
+  gl.tilt += (tilt - gl.tilt) * k; gl.headX += (headX - gl.headX) * k;
+  gl.lookX += (lookX - gl.lookX) * Math.min(1, dt * 12); gl.lookY += (lookY - gl.lookY) * Math.min(1, dt * 12);
+  gl.browUp += (browUp - gl.browUp) * k; gl.blush += (blushT - gl.blush) * Math.min(1, dt * 4);
+  const hp = handTargets(pose, gl);
+  const hk = Math.min(1, dt * 12);
+  gl.hands.lx += (hp[0] - gl.hands.lx) * hk; gl.hands.ly += (hp[1] - gl.hands.ly) * hk;
+  gl.hands.rx += (hp[2] - gl.hands.rx) * hk; gl.hands.ry += (hp[3] - gl.hands.ry) * hk;
+  // pigtails spring
+  const pt = gl.pigOn ? 1 : 0;
+  gl.pigV += ((pt - gl.pig) * 120 - gl.pigV * 8) * dt; gl.pig += gl.pigV * dt;
+  gl.bob = Math.sin(T * 2.2) * 1.2;
+}
+function handTargets(pose, gl) {
+  const t = T;
+  switch (pose) {
+    case 'brush': { const p = clamp((gl.brushT - 0.1) / 0.4, 0, 1), q = clamp((gl.brushT - 1.1) / 0.4, 0, 1); const side = gl.brushIdx < 2 ? -1 : 1;
+      const hx = lerp(side * 40, side * 70, p), hy = lerp(40, 4, p);
+      return side < 0 ? [lerp(hx, -58, q), lerp(hy, 236, q), 58, 236] : [-58, 236, lerp(hx, 58, q), lerp(hy, 236, q)]; }
+    case 'shy': return [-26, 150, 26, 150];
+    case 'peek': return [-58, 236, 80, 70];
+    case 'even': return [-100, 34 + Math.sin(t * 12) * 3, 100, 34 + Math.cos(t * 12) * 3];
+    case 'clap': { const c = Math.abs(Math.sin(t * 9)) * 18; return [-6 - c, 160, 6 + c, 160]; }
+    case 'peace': return [-58, 236, 88, -4];
+    case 'cheeks': return [-74, 52, 74, 52];
+    case 'up': return [-120, -64 + Math.sin(t * 6) * 4, 120, -64 + Math.cos(t * 6) * 4];
+    case 'hip': return [-108, 196, 108, 196];
+    case 'wave': return [-58, 236, 112, -40 + Math.sin(t * 10) * 10];
+    default: return [-58, 236, 58, 236];
+  }
+}
+function updatePieces(dt) {
+  const U = LY.U;
+  for (const p of pieces) {
+    if (p.state === 'fall' || p.state === 'fly') {
+      p.vy += (p.state === 'fly' ? 760 : 900) * dt;
+      const term = (p.state === 'fly' ? 260 : 150) * U;
+      if (p.vy > term) p.vy = term;
+      const tx = p.fx * W;
+      p.vx += (tx - p.x) * 1.6 * dt;
+      p.vx *= Math.pow(0.4, dt);
+      p.x += (p.vx + Math.sin(T * 3.2 + p.phase) * 50 * U) * dt;
+      p.y += p.vy * dt;
+      p.rot += (Math.sin(T * 3.2 + p.phase) * 1.2 + (p.state === 'fly' ? 6 : 0)) * dt;
+      const ry = floorY(p.fy);
+      if (p.vy > 0 && p.y >= ry) {
+        p.y = ry; p.state = 'rest'; p.restRot = p.rot; p.fx = p.x / W; p.jig = 0.6;
+        addConfetti(p.x + rnd(-14, 14), p.y + rnd(-6, 6), p.col);
+        addConfetti(p.x + rnd(-14, 14), p.y + rnd(-6, 6), WHITE);
+      }
+    } else if (p.state === 'rest') {
+      p.x = p.fx * W; p.y = floorY(p.fy);
+      p.jig = Math.max(0, p.jig - dt * 2.5);
+    }
+  }
+}
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i]; p.t += dt;
+    if (p.t >= p.life) { particles.splice(i, 1); continue; }
+    if (p.kind === 'crumb') { p.vy += 700 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt; }
+    else if (p.kind === 'star') { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.94; p.vy *= 0.94; }
+  }
+}
+function computeLure() {
+  if (phase === 'pose') { const w = headToWorld(0, 0); return { type: 'girl', x: w.x, y: w.y, lx: 0, ly: 0 }; }
+  if (phase !== 'play') return null;
+  if (gest && gest.type === 'piece') { const r = frameRect(); return { type: 'mirror', lx: 1, ly: 0, x: r.x + r.w / 2, y: r.y + r.h / 2 }; }
+  const gl = girl;
+  const vl = eyeVisible(gl, -1), vr = eyeVisible(gl, 1);
+  const strandL = i => { const s = gl.strands[i]; return { type: 'strand', i, lx: clamp(s.cx / 40, -1, 1), ly: -0.5 }; };
+  if (!gl.flags.anyCut) return strandL(gl.firstLure === undefined ? (gl.firstLure = Math.random() < 0.5 ? 1 : 3) : gl.firstLure);
+  if (vl !== vr) return strandL(vl ? 3 : 1);
+  if (!vl) return strandL(1);
+  const dc = decorCounts();
+  if (!(dc.strip > 0 && dc.round > 0)) {
+    const want = dc.strip === 0 ? 'strip' : 'round';
+    let cand = null;
+    for (let i = pieces.length - 1; i >= 0; i--) { const p = pieces[i]; if (p.state === 'rest') { if (p.kind === want) { cand = p; break; } if (!cand) cand = p; } }
+    if (cand && (cand.kind === want || dc.n === 0)) return { type: 'piece', p: cand, lx: clamp((cand.x - LY.hx) / (80 * LY.U), -1, 1), ly: 1, x: cand.x, y: cand.y };
+  }
+  for (const i of [2, 1, 3, 0, 4]) if (!strandDone(gl.strands[i])) return strandL(i);
+  return null;
+}
+function updateHint(dt) {
+  if (hint) { hint.t += dt; if (hint.t > hint.dur) hint = null; return; }
+  if (!lure || gest) return;
+  if (T - lastInputT > 4 && hintShownFor !== lastInputT && phase !== 'finale' && phase !== 'photo' && phase !== 'next') {
+    hintShownFor = lastInputT;
+    hint = { t: 0, dur: 2.0, lure: Object.assign({}, lure) };
+    girl.brushT = -1;
+  }
+}
+function updatePhase(dt) {
+  phaseT += dt;
+  stageT += (stageTarget - stageT) * Math.min(1, dt * 3.2);
+  if (Math.abs(stageTarget - stageT) < 0.002) stageT = stageTarget;
+  mirrorWob = Math.max(0, mirrorWob - dt * 2.2); frameWob = Math.max(0, frameWob - dt * 2.2);
+  if (phase === 'play' && doneCheckT > 0 && T > doneCheckT) {
+    doneCheckT = -1;
+    if (allDone(girl)) startFinale();
+  }
+  if (phase === 'finale') {
+    girl.x += (LY.stage.gx - girl.x) * Math.min(1, dt * 5);
+    const sp = clamp((phaseT - 0.9) / 1.0, 0, 1);
+    girl.spinX = Math.cos(sp * TAU);
+    if (phaseT > 2.1) { phase = 'pose'; phaseT = 0; girl.spinX = 1; girl.poseNext = T + 1.8; lastInputT = T; }
+  }
+  if (phase === 'pose' || phase === 'photo') girl.x += (LY.stage.gx - girl.x) * Math.min(1, dt * 5);
+  if (phase === 'photo') {
+    if (photoFly) {
+      photoFly.t += dt / 1.0;
+      if (photoFly.t >= 1.5) { photos.unshift({ cv: photoFly.cv, tilt: (photos.length % 2 ? 1 : -1) * rnd(0.03, 0.07) }); photoFly = null; photoAppear = 0; }
+    } else {
+      photoAppear = Math.min(1, photoAppear + dt * 1.6);
+      if (photoAppear >= 1) { phase = 'next'; phaseT = 0; stageTarget = 0; SND.whoosh(); }
+    }
+  }
+  if (phase === 'next') {
+    if (phaseT < 1.0) { girl.x = LY.stage.gx - easeOut(phaseT / 1.0) * (W / LY.U + 320) * 0.6 - ease(phaseT) * 200; }
+    else if (!girl.newOne) {
+      cycle++;
+      girl = makeGirl(); girl.newOne = true; girl.x = (W / LY.U) * 0.7 + 260;
+      SND.pop();
+    } else {
+      girl.x += (0 - girl.x) * Math.min(1, dt * 4.5);
+      if (Math.abs(girl.x) < 1) { girl.x = 0; girl.newOne = false; phase = 'play'; phaseT = 0; lastInputT = T; girl.nextBrush = 0.6; }
+    }
+  }
+  if (photoAppear < 1 && phase !== 'photo') photoAppear = Math.min(1, photoAppear + dt * 1.6);
+}
+function startFinale() {
+  phase = 'finale'; phaseT = 0; stageTarget = 1;
+  SND.fanfare(); setTimeout(() => SND.whoosh(), 120);
+  for (const p of pieces) {
+    if (p.state === 'rest' || p.state === 'fall') {
+      p.state = 'fly'; p.vy = -rnd(380, 600) * LY.U; p.vx = rnd(-120, 120); p.fx = clamp(p.fx + rnd(-0.15, 0.15), 0.05, 0.95); p.fy = Math.random();
+    }
+  }
+  const w = headToWorld(0, -40);
+  sparkles(w.x, w.y, 14, 160 * LY.U);
+  hint = null;
+}
+
+/* ===== drawing ===== */
+function drawBackground() {
+  g.fillStyle = NAVY; g.fillRect(0, 0, W, H);
+}
+function drawFloor() {
+  const ft = LY.floorTop;
+  const p = [0, H + 10];
+  const n = Math.ceil(W / 34) + 1;
+  for (let i = 0; i <= n; i++) { const x = i * W / n; p.push(x, ft + (i % 2 ? 7 : -3) + hash(i) * 4); }
+  p.push(W, H + 10);
+  paper(p, WHITE, 0, -5);
+  // floor material grows with every landed piece
+  for (const c of confetti) {
+    const x = c.fx * W, y = LY.floorTop + c.fy * LY.floorH;
+    g.save(); g.translate(x, y); g.rotate(c.rot); g.fillStyle = c.col;
+    g.fillRect(-c.r, -c.r * 0.6, c.r * 2, c.r * 1.2); g.restore();
+  }
+}
+function drawWall() {
+  const pf = LY.pframe;
+  const wob = Math.sin(T * 30) * frameWob * 0.04;
+  // the empty photo frame (it previews the mirror decorations)
+  g.save(); g.translate(pf.x + pf.w / 2, pf.y + pf.h / 2); g.rotate(wob - 0.02); g.translate(-pf.w / 2, -pf.h / 2);
+  const r = { x: 0, y: 0, w: pf.w, h: pf.h };
+  drawFrame(r, false, 0.75, true);
+  g.restore();
+  // photos row
+  const ph = pf.h * 0.84, pw = ph * LY.stage.w / LY.stage.h;
+  const x0 = pf.x + pf.w + 16;
+  const maxN = Math.max(1, Math.floor((W - SA.r - 8 - x0) / (pw + 10)));
+  const ap = ease(photoAppear);
+  for (let i = 0; i < photos.length && i < maxN + 1; i++) {
+    const ph0 = photos[i];
+    let x = x0 + i * (pw + 10), y = pf.y + (pf.h - ph) / 2 + 2;
+    let w = pw, h = ph;
+    if (i === 0 && ap < 1) { x = lerp(pf.x, x, ap); y = lerp(pf.y, y, ap); w = lerp(pf.w, pw, ap); h = lerp(pf.h, ph, ap); }
+    else if (ap < 1) x = lerp(x0 + (i - 1) * (pw + 10), x, ap);
+    if (i >= maxN && ap >= 1) break;
+    g.save(); g.translate(x + w / 2, y + h / 2); g.rotate(ph0.tilt + Math.sin(T * 30 + i) * frameWob * 0.03);
+    g.fillStyle = SHADOW; g.fillRect(-w / 2 + 4, -h / 2 + 5, w, h);
+    g.drawImage(ph0.cv, -w / 2, -h / 2, w, h);
+    fillP([-w * 0.16, -h / 2 - 5, w * 0.16, -h / 2 - 7, w * 0.17, -h / 2 + 6, -w * 0.15, -h / 2 + 8], i % 2 ? PINK : YELLOW);
+    g.restore();
+  }
+  if (photoFly) {
+    const t = clamp(photoFly.t, 0, 1), st = LY.stage, e = easeOut(t);
+    const x = lerp(st.x, pf.x, e), y = lerp(st.y, pf.y, e), w = lerp(st.w, pf.w, e), h = lerp(st.h, pf.h, e);
+    g.save(); g.translate(x + w / 2, y + h / 2); g.rotate(Math.sin(t * Math.PI) * 0.2);
+    g.fillStyle = SHADOW; g.fillRect(-w / 2 + 5, -h / 2 + 6, w, h);
+    g.drawImage(photoFly.cv, -w / 2, -h / 2, w, h); g.restore();
+  }
+}
+function drawStageBackdrop(r, alpha) {
+  if (alpha <= 0.01) return;
+  const t = frameThick(r);
+  const ix = r.x + t, iy = r.y + t, iw = r.w - 2 * t, ih = r.h - 2 * t;
+  g.save(); g.globalAlpha = alpha;
+  g.fillStyle = WHITE; g.fillRect(ix, iy, iw, ih);
+  // the color steps of her bangs, echoed as papercut columns
+  const cw = iw / 5;
+  for (let i = 0; i < 5; i++) {
+    const s = girl.strands[i];
+    const map = y => iy + ih * clamp((y + 80) / 170, 0, 1);
+    const x = ix + i * cw;
+    const b0 = s.layers[0].db, b1 = s.layers[1].visible ? Math.max(b0, s.layers[1].db) : b0, b2 = s.layers[2].visible ? Math.max(b1, s.layers[2].db) : b1;
+    const bands = [[-80, b0, s.layers[0].col], [b0, b1, s.layers[1].col], [b1, b2, NAVY]];
+    for (const [a, b, c] of bands) { if (b - a < 0.5) continue; g.fillStyle = c; g.fillRect(x + 3, map(a), cw - 6, map(b) - map(a)); }
+    g.fillStyle = WHITE; g.fillRect(x + 3, map(b2) - 2, cw - 6, 3);
+  }
+  g.restore();
+}
+function drawFrame(r, isStage, scale, preview) {
+  const t = frameThick(r);
+  if (!preview) {
+    const wob = Math.sin(T * 28) * mirrorWob * 0.03;
+    g.save(); g.translate(r.x + r.w / 2, r.y + r.h); g.rotate(wob); g.translate(-(r.x + r.w / 2), -(r.y + r.h));
+  }
+  // frame band (paper)
+  g.save(); g.translate(5, 6); g.beginPath();
+  g.rect(r.x, r.y, r.w, r.h); g.rect(r.x + r.w - t, r.y + t, -(r.w - 2 * t), r.h - 2 * t);
+  g.fillStyle = SHADOW; g.fill('nonzero'); g.restore();
+  g.beginPath();
+  g.rect(r.x, r.y, r.w, r.h); g.rect(r.x + r.w - t, r.y + t, -(r.w - 2 * t), r.h - 2 * t);
+  g.fillStyle = WHITE; g.fill('nonzero');
+  // inner shadow on glass (depth)
+  if (!isStage && !preview) {
+    g.fillStyle = SHADOW;
+    g.fillRect(r.x + t, r.y + t, r.w - 2 * t, 6);
+    g.fillRect(r.x + t, r.y + t, 5, r.h - 2 * t);
+  }
+  // decorations
+  for (let i = 0; i < NSLOT; i++) {
+    const p = slots[i]; if (!p) continue;
+    const sp = slotPos(r, i);
+    const hop = Math.max(0, 1 - (T - p.hopT) * 3);
+    drawPieceAt(p, sp.x, sp.y, decorAngle(p, sp), decorScale(p, sp) * (1 + hop * 0.25) * (preview ? 0.9 : 1), preview ? 2 : 4);
+  }
+  if (!preview) g.restore();
+}
+function decorAngle(p, sp) {
+  const na = Math.atan2(sp.ny, sp.nx);
+  if (p.kind === 'strip' && p.pw > p.ph) return na;
+  return na - Math.PI / 2;
+}
+function decorScale(p, sp) { return sp.len / Math.max(p.pw, p.ph) * (p.kind === 'round' ? 0.85 : 1); }
+function drawMirror() {
+  const r = frameRect();
+  const t = frameThick(r);
+  const st = ease(stageT);
+  if (st < 0.98) {
+    const gx = r.x + t, gy = r.y + t, gw = r.w - 2 * t, gh = r.h - 2 * t;
+    g.save(); g.beginPath(); g.rect(gx, gy, gw, gh); g.clip();
+    g.fillStyle = NAVY; g.fillRect(gx, gy, gw, gh);
+    // reflection of the girl (mirrored)
+    g.save();
+    const k = gw * 0.72 / 240;
+    g.translate(gx + gw / 2, gy + gh * 0.5);
+    g.scale(-k, k);
+    g.globalAlpha = 1 - st;
+    drawHead(true);
+    g.restore();
+    // glints
+    g.globalAlpha = 0.22 * (1 - st); g.fillStyle = WHITE;
+    fillP([gx + gw * 0.62, gy, gx + gw * 0.82, gy, gx + gw * 0.2, gy + gh, gx, gy + gh], WHITE);
+    fillP([gx + gw * 0.9, gy, gx + gw, gy, gx + gw * 0.4, gy + gh, gx + gw * 0.32, gy + gh], WHITE);
+    g.globalAlpha = 1;
+    g.restore();
+  }
+  drawFrame(r, st > 0.5, 1);
+}
+
+function drawPieceAt(p, x, y, rot, sc, sh) {
+  g.save(); g.translate(x + sh, y + sh * 1.25); g.rotate(rot); g.scale(sc, sc); fillP(p.pts, SHADOW); g.restore();
+  g.save(); g.translate(x, y); g.rotate(rot); g.scale(sc, sc);
+  fillP(p.pts, p.col);
+  // white cut edge along the cut line
+  const tp = p.top;
+  fillP([p.xl + 1, tp, p.xr - 1, tp, p.xr - 1.5, tp + 2.6, p.xl + 1.5, tp + 2.6], WHITE);
+  g.restore();
+}
+function drawPieces(states) {
+  const U = LY.U;
+  for (const p of pieces) {
+    if (!states.includes(p.state)) continue;
+    let y = p.y, x = p.x, rot = p.state === 'rest' ? p.restRot : p.rot;
+    if (p.state === 'rest' && p.jig > 0) rot += Math.sin(T * 40) * p.jig * 0.12;
+    if (lure && lure.type === 'piece' && lure.p === p) { y -= Math.abs(Math.sin(T * 5)) * 10 * U; }
+    const sc = p.state === 'drag' ? U * 1.05 : (p.state === 'rest' ? U * 0.82 : U);
+    drawPieceAt(p, x, y, rot, sc, p.state === 'drag' ? 8 : 3);
+    if (lure && lure.type === 'piece' && lure.p === p && Math.sin(T * 5) > 0.3) fillP(star(x + p.pw * U * 0.45, y - p.ph * U * 0.4, 7 * U), WHITE);
+  }
+}
+
+/* --- girl drawing (local units, head center = 0,0, R≈100) --- */
+const SX = 3.5, SY = 4.5;
+function drawGirl(withHint) {
+  const o = girlOrigin(); const U = LY.U; const gl = girl;
+  g.save(); g.translate(o.ox, o.oy); g.scale(U * gl.spinX, U);
+  // white spotlight disc
+  if (stageT < 0.5) { g.globalAlpha = 1 - stageT * 2; paper(ngon(0, 0, 138, 138, 26, 0.1, 0.03, 3), WHITE, 0, 0); g.globalAlpha = 1; }
+  drawBody();
+  g.save(); g.translate(0, 90); g.rotate(gl.tilt); g.translate(gl.headX, -90);
+  drawHead(false);
+  g.restore();
+  drawArms();
+  g.restore();
+}
+function drawBody() {
+  const gl = girl;
+  paper([-15, 70, 15, 70, 15, 116, -15, 116], WHITE, SX, SY);
+  const cp = [-58, 106, 58, 106, 130, 272, -130, 272];
+  paper(cp, gl.capeCol, SX, SY);
+  for (let i = 0; i < 7; i++) { const x = -90 + (i % 4) * 58 + (i > 3 ? 29 : 0), y = 170 + (i > 3 ? 55 : 0); fillP(ngon(x, y, 7, 7, 8, 0.3), WHITE); }
+  const col = [-62, 100]; for (let i = 0; i <= 8; i++) col.push(-62 + i * 15.5, i % 2 ? 128 : 118); col.push(62, 100);
+  paper(col, WHITE, SX * 0.6, SY * 0.6);
+}
+function drawArms() {
+  const gl = girl, h = gl.hands;
+  const arm = (sx, sy, hx, hy, right) => {
+    const dx = hx - sx, dy = hy - sy, l = Math.hypot(dx, dy) || 1, nx = -dy / l * 9, ny = dx / l * 9;
+    if (hy < 200) paper([sx + nx, sy + ny, hx + nx * 0.8, hy + ny * 0.8, hx - nx * 0.8, hy - ny * 0.8, sx - nx, sy - ny], WHITE, SX, SY);
+    paper(ngon(hx, hy, 15, 15, 10, 0.2, 0.08, right ? 5 : 6), WHITE, SX, SY);
+    if (gl.pose === 'peace' && right) {
+      paper([hx - 9, hy - 6, hx - 3, hy - 6, hx - 6, hy - 34, hx - 14, hy - 32], WHITE, SX, SY);
+      paper([hx + 2, hy - 7, hx + 8, hy - 5, hx + 12, hy - 33, hx + 4, hy - 34], WHITE, SX, SY);
+    }
+  };
+  if (gl.pose === 'idle') { // hands resting on the cape
+    paper(ngon(-58, 236, 14, 12, 10, 0.2, 0.08, 5), WHITE, SX, SY);
+    paper(ngon(58, 236, 14, 12, 10, 0.2, 0.08, 6), WHITE, SX, SY);
+    return;
+  }
+  arm(-50, 120, h.lx, h.ly, false);
+  arm(50, 120, h.rx, h.ry, true);
+}
+function drawHead(reflect) {
+  const gl = girl;
+  // back hair (her own navy hair)
+  paper(ngon(0, -10, 118, 116, 22, 0.05, 0.04, 1), NAVY, SX, SY);
+  paper([-116, -12, -118, 70, -98, 96, -76, 64], NAVY, SX, SY);
+  paper([116, -12, 118, 70, 98, 96, 76, 64], NAVY, SX, SY);
+  // pigtails (ふたつ結び) pop out when discovered
+  if (gl.pig > 0.02) {
+    const s = Math.max(0, gl.pig);
+    for (const side of [-1, 1]) {
+      g.save(); g.translate(side * 108, -30); g.rotate(-side * (0.45 + Math.sin(T * 3) * 0.06)); g.scale(s, s);
+      paper([0, -14, side * 18, -8, side * 40, 40, side * 30, 84, side * 10, 96, side * 2, 60, -side * 4, 10], gl.cols[1], SX, SY);
+      paper([-12, -18, 0, -6, -12, 6], gl.cols[0], 2, 2); paper([12, -18, 0, -6, 12, 6], gl.cols[0], 2, 2);
+      paper(ngon(0, -6, 6, 6, 6, 0), WHITE, 1, 1);
+      g.restore();
+    }
+  }
+  // face
+  paper(ngon(0, 2, 90, 100, 20, 0.08, 0.03, 2), WHITE, SX, SY);
+  // cheeks
+  g.globalAlpha = clamp(0.25 + gl.blush * 0.75, 0, 1);
+  fillP(ngon(-58, 34, 12, 10, 9, 0.2), PINK); fillP(ngon(58, 34, 12, 10, 9, 0.5), PINK);
+  g.globalAlpha = 1;
+  drawEyes(reflect);
+  drawMouth();
+  // bangs: back-most layer first so front layers sit on top
+  for (let k = 2; k >= 0; k--) {
+    for (const i of DRAW_ORDER) { const s = gl.strands[i]; if (s.layers[k].visible) drawLayer(s, k); }
+  }
+  // paper crown (front long layer's root)
+  const cap = [-100, -30, -90, -44, -74, -50, -56, -62, -38, -66, -19, -72, 0, -73, 19, -72, 38, -66, 56, -62, 74, -50, 90, -44, 100, -30,
+    98, -60, 85, -88, 60, -108, 30, -118, 0, -121, -30, -118, -60, -108, -85, -88, -98, -60];
+  paper(cap, gl.cols[0], SX * 0.6, SY * 0.6);
+  // edge sparkle after stripe/tri discoveries
+  const se = T - gl.sparkleEdgeT;
+  if (se < 1.2) {
+    for (const s of gl.strands) {
+      const prog = se / 1.2; const ox = (s.i / 4);
+      if (Math.abs(prog - ox) < 0.25) { const y = s.layers[0].db; fillP(star(cAt(s, y), y, 9), WHITE); if (s.layers[1].visible) { const y1 = s.layers[1].db; fillP(star(cAt(s, y1) + 8, y1, 7), WHITE); } }
+    }
+  }
+  // lure sparkle on the strand to cut next
+  if (!reflect && lure && lure.type === 'strand') {
+    const s = gl.strands[lure.i]; const y = strandLowest(s);
+    if (Math.sin(T * 5) > 0.2) fillP(star(cAt(s, y) + s.w * 0.45, y - 4, 8), WHITE);
+  }
+}
+function drawLayer(s, k) {
+  const l = s.layers[k];
+  let sy = 1 - 0.07 * s.press + s.spring * 0.06;
+  let hop = 0;
+  if (lure && lure.type === 'strand' && lure.i === s.i && phase === 'play') hop = Math.abs(Math.sin(T * 5)) * 0.035;
+  sy -= hop;
+  const px = s.cx, py = s.top - 12;
+  g.save(); g.translate(px, py); g.rotate(s.swing); g.transform(1, 0, s.pull, sy, 0, 0); g.translate(-px, -py);
+  const pts = layerPts(s, k, l.db, l.tip, l.jag);
+  const shm = 1 - 0.6 * s.press;
+  if (k === 2 && l.pop > 0) { const ps = 1 + l.pop * 0.25; g.translate(cAt(s, l.db), l.db); g.scale(ps, ps); g.translate(-cAt(s, l.db), -l.db); }
+  paper(pts, l.col, SX * shm, SY * shm);
+  if (l.tip === 'curl') {
+    const r = curlR(s), hw = layerHW(s, k), m = cAt(s, l.db);
+    for (const off of [-0.5, 0.5]) {
+      const cx = m + off * hw, cy = l.db - r;
+      paper(ngon(cx, cy, r, r, 10, 0.1), l.col, SX * shm * 0.6, SY * shm * 0.6);
+      // rolled-paper spiral: the white core of the curled strip
+      const sp = [], sp2 = [], turns = 1.5, n = 14, bw = Math.max(0.9, r * 0.16);
+      for (let j = 0; j <= n; j++) {
+        const th = j / n * turns * TAU + off * 2, rr = r * (0.18 + 0.62 * j / n);
+        sp.push(cx + Math.cos(th) * rr, cy + Math.sin(th) * rr);
+        sp2.unshift(cx + Math.cos(th) * (rr + bw), cy + Math.sin(th) * (rr + bw));
+      }
+      fillP(sp.concat(sp2), WHITE);
+    }
+  } else if (l.tip === 'twin') {
+    const hw = layerHW(s, k), m = cAt(s, l.db);
+    for (const off of [-0.45, 0.45]) fillP([m + off * hw - 5, l.db - 13, m + off * hw + 5, l.db - 13, m + off * hw + 4, l.db - 7, m + off * hw - 4, l.db - 7], girl.cols[0]);
+  } else if (l.tip === 'patsun') {
+    const hw = layerHW(s, k), m = cAt(s, l.db);
+    fillP([m - hw, l.db - 2.5, m + hw, l.db - 2.5, m + hw, l.db, m - hw, l.db], WHITE);
+  }
+  if (l.cut && l.tip === 'flat') { // white cut edge
+    const hw = layerHW(s, k), m = cAt(s, l.db);
+    fillP([m - hw + 0.5, l.db - 2.6, m + hw - 0.5, l.db - 2.6, m + hw * 0.25, l.db - l.jag, m - hw * 0.35, l.db + l.jag * 1.3, m - hw + 0.5, l.db], WHITE);
+  }
+  g.restore();
+}
+function drawEyes(reflect) {
+  const gl = girl;
+  const closed = gl.blinkT > 0;
+  const lx = clamp(gl.lookX, -1, 1) * 3.5, ly = clamp(gl.lookY, -1, 1) * 3;
+  for (const side of [-1, 1]) {
+    const ex = side * EYE_X, ey = EYE_Y;
+    const winkThis = gl.wink === side;
+    // brows
+    const by = BROW_Y - gl.browUp * 6;
+    fillP([ex - 11, by + 2 + side * 0, ex + 11, by - 1, ex + 11, by + 3, ex - 11, by + 6], NAVY);
+    if (closed || winkThis || gl.mood === 'happy') {
+      // closed / happy arc (a curved paper band)
+      const p = []; const up = gl.mood === 'happy' && !closed && !winkThis ? -1 : 1;
+      for (let j = 0; j <= 6; j++) { const a = Math.PI * j / 6; p.push(ex - Math.cos(a) * 12, ey + 2 - up * Math.sin(a) * 7); }
+      for (let j = 6; j >= 0; j--) { const a = Math.PI * j / 6; p.push(ex - Math.cos(a) * 12, ey + 2 - up * Math.sin(a) * 7 + 4.5); }
+      fillP(p, NAVY);
+    } else {
+      fillP(ngon(ex + lx * 0.4, ey + ly * 0.4, 11, 14, 14, 0), NAVY);
+      fillP(ngon(ex + lx + 3, ey + ly - 4, 4, 4, 7, 0.2), WHITE);
+      fillP(ngon(ex + lx - 3, ey + ly + 5, 2, 2, 6, 0.4), WHITE);
+    }
+  }
+}
+function drawMouth() {
+  const m = girl.mood;
+  if (m === 'happy') {
+    const p = [-15, 46]; for (let j = 1; j < 8; j++) { const a = Math.PI * j / 8; p.push(-Math.cos(a) * 15, 46 + Math.sin(a) * 13); } p.push(15, 46);
+    fillP(p, NAVY);
+    fillP(ngon(0, 54, 7, 4, 8, 0), PINK);
+  } else if (m === 'smile') {
+    const p = []; for (let j = 0; j <= 6; j++) { const a = Math.PI * j / 6; p.push(-Math.cos(a) * 12, 46 + Math.sin(a) * 7); }
+    for (let j = 6; j >= 0; j--) { const a = Math.PI * j / 6; p.push(-Math.cos(a) * 12, 46 + Math.sin(a) * 7 + 4); }
+    fillP(p, NAVY);
+  } else if (m === 'o') {
+    fillP(ngon(0, 50, 6, 7, 9, 0), NAVY);
+  } else {
+    fillP([-8, 48, 8, 48, 7, 52, -7, 52], NAVY);
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const a = 1 - p.t / p.life;
+    if (p.kind === 'crumb') {
+      g.save(); g.translate(p.x, p.y); g.rotate(p.rot); g.globalAlpha = Math.min(1, a * 2);
+      fillP([-p.r, -p.r * 0.5, p.r, -p.r * 0.8, p.r * 0.6, p.r * 0.7], p.col); g.restore();
+    } else if (p.kind === 'star') {
+      g.globalAlpha = Math.min(1, a * 1.5); fillP(star(p.x, p.y, p.r * (0.6 + 0.4 * Math.sin(p.t * 20))), WHITE); g.globalAlpha = 1;
+    } else if (p.kind === 'snip') {
+      g.save(); g.translate(p.x, p.y); g.rotate(p.rot); g.globalAlpha = a;
+      const r = p.r * (0.6 + p.t / p.life * 0.6);
+      fillP([-r, -1.5, -r * 0.2, -4, r, -1, r * 0.2, 3], WHITE); g.restore();
+    }
+  }
+  g.globalAlpha = 1;
+}
+function drawHand(x, y, press) { // paper hand for the wordless demo
+  const U = LY.U * 1.1;
+  g.save(); g.translate(x, y); g.scale(U, U);
+  const s = 1 - press * 0.1; g.scale(s, s);
+  const sh = 6 - press * 3;
+  paper([-5, 0, 5, 0, 8, 34, -6, 36], WHITE, sh, sh);
+  paper(ngon(8, 50, 22, 20, 11, 0.3, 0.06, 9), WHITE, sh, sh);
+  paper([14, 30, 22, 26, 34, 36, 24, 42], WHITE, sh * 0.6, sh * 0.6);
+  g.restore();
+}
+function drawHint() {
+  if (!hint) return;
+  const t = hint.t, L = hint.lure;
+  const fade = Math.min(1, t * 4, (hint.dur - t) * 4);
+  g.globalAlpha = clamp(fade, 0, 1);
+  if (L.type === 'strand') {
+    const s = girl.strands[L.i];
+    const y = (s.layers[0].cut ? Math.min(snapHeight(s.layers[0].b - 2), s.layers[0].b) : EYE_SNAP + 4);
+    const p = clamp((t - 0.35) / 1.1, 0, 1);
+    const a = headToWorld(cAt(s, y) - 50, y), b = headToWorld(cAt(s, y) + 50, y);
+    const e = ease(p);
+    drawHand(lerp(a.x, b.x, e), lerp(a.y, b.y, e), p > 0 && p < 1 ? 1 : 0);
+  } else if (L.type === 'piece') {
+    const sp = slotPos(frameRect(), firstFreeSlot());
+    const p = ease(clamp((t - 0.35) / 1.2, 0, 1));
+    drawHand(lerp(L.p.x, sp.x, p), lerp(L.p.y, sp.y, p), p > 0 && p < 1 ? 1 : 0);
+  } else if (L.type === 'girl') {
+    const w = headToWorld(10, 60);
+    const press = (t % 0.8) < 0.25 ? 1 : 0;
+    drawHand(w.x, w.y + (press ? 0 : -8), press);
+  }
+  g.globalAlpha = 1;
+}
+function firstFreeSlot() { for (let i = 0; i < NSLOT; i++) if (!slots[i]) return i; return 0; }
+function drawLureMirror() {
+  if (!lure || lure.type !== 'mirror') return;
+  const r = frameRect(); const i = firstFreeSlot(); const sp = slotPos(r, i);
+  if (Math.sin(T * 6) > -0.2) fillP(star(sp.x, sp.y, 10 * LY.U), WHITE);
+}
+function drawLureGirl() {
+  if (!lure || lure.type !== 'girl') return;
+  const w = headToWorld(0, -140);
+  const s = 9 + Math.abs(Math.sin(T * 5)) * 6;
+  fillP(star(w.x - 40 * LY.U, w.y, s * LY.U), WHITE);
+  fillP(star(w.x + 46 * LY.U, w.y + 20 * LY.U, s * 0.7 * LY.U), WHITE);
+}
+
+function render() {
+  g = ctx;
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  drawBackground();
+  drawWall();
+  drawFloor();
+  const st = ease(stageT);
+  if (st > 0.02) drawStageBackdrop(frameRect(), st);
+  if (!LY.portrait && st < 0.5) drawMirror();
+  drawGirl(true);
+  if (LY.portrait || st >= 0.5) drawMirror();
+  drawLureGirl();
+  drawPieces(['rest']);
+  drawPieces(['fall', 'fly']);
+  drawLureMirror();
+  drawParticles();
+  drawPieces(['drag']);
+  drawHint();
+  const ft = T - flashT;
+  if (ft < 0.35) { g.globalAlpha = (1 - ft / 0.35) * 0.85; g.fillStyle = WHITE; g.fillRect(0, 0, W, H); g.globalAlpha = 1; }
+}
+
+/* ===== loop ===== */
+let rafId = 0, lastT = 0, running = false, frames = 0;
+function frame(now) {
+  rafId = 0;
+  if (!running) return;
+  let dt = (now - lastT) / 1000; lastT = now;
+  if (!(dt > 0)) dt = 0.016;
+  if (dt > 0.05) dt = 0.05;     // tab-return / hitch: clamp time jump
+  T += dt; frames++;
+  lure = computeLure();
+  updateGirl(dt);
+  updatePieces(dt);
+  updateParticles(dt);
+  updatePhase(dt);
+  updateHint(dt);
+  render();
+  rafId = requestAnimationFrame(frame);
+}
+function start() { if (running) return; running = true; lastT = performance.now(); rafId = requestAnimationFrame(frame); }
+function stopLoop() { running = false; if (rafId) cancelAnimationFrame(rafId); rafId = 0; }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stopLoop(); endGesture(true); try { if (AC && AC.state === 'running') AC.suspend(); } catch (e) {} }
+  else { try { if (AC && AC.state === 'suspended') AC.resume().catch(() => {}); } catch (e) {} start(); }
+});
+window.addEventListener('pagehide', () => stopLoop());
+window.addEventListener('pageshow', () => { if (!document.hidden) start(); });
+let resizeTimer = 0;
+const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { layout(); if (!running && !document.hidden) start(); else render(); }, 60); };
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', onResize);
+
+reset();
+layout();
+render();
+start();
+
+/* test hook (no UI): lets automated checks read state and map coordinates */
+window.__salon = {
+  info() {
+    const gl = girl;
+    return {
+      phase, cycle, T, frames, particles: particles.length, pieces: pieces.length,
+      floor: pieces.filter(p => p.state !== 'decor').length, decor: decorCounts(), photos: photos.length,
+      eyes: [eyeVisible(gl, -1), eyeVisible(gl, 1)], brows: [browVisible(gl, -1), browVisible(gl, 1)],
+      flags: JSON.parse(JSON.stringify(gl.flags)), react: gl.react, pose: gl.pose, mood: gl.mood, wink: gl.wink,
+      strands: gl.strands.map(s => ({ style: s.style, b: s.layers.map(l => Math.round(l.b)), cut: s.layers.map(l => l.cut), vis: s.layers.map(l => l.visible), done: strandDone(s), press: +s.press.toFixed(2) })),
+      lure: lure ? lure.type + (lure.i !== undefined ? ':' + lure.i : '') : null, hint: !!hint, stageT, audio: AC ? AC.state : 'none', U: LY.U
+    };
+  },
+  toWorld(x, y) { return headToWorld(x, y); },
+  strand(i) { const s = girl.strands[i]; return { cx: s.cx, top: s.top, lean: s.lean, w: s.w }; },
+  floorPieces() { return pieces.filter(p => p.state === 'rest').map(p => ({ x: p.x, y: p.y, kind: p.kind })); },
+  slotXY(i) { return slotPos(frameRect(), i); },
+  frame() { return frameRect(); },
+  girlXY() { return headToWorld(0, 40); },
+  layout() { return LY; }
+};
+})();
+</script>
+</body>
+</html>
