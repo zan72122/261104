@@ -138,10 +138,12 @@ function newCycle(){
   for(const c of S.cubes){ if(c.initSpoon){ c.y=spoonY(c.x); } }
   S.lastInput=0;
 }
-function logD(k,info){ if(S.log.length<400) S.log.push({k,t:+S.t.toFixed(2),info}); }
+const ALLLOG=[]; window.__allLog=ALLLOG;
+function logD(k,info){ const e={k,t:+S.t.toFixed(2),c:S.cycle,info}; if(S.log.length<400) S.log.push(e); if(ALLLOG.length<3000) ALLLOG.push(e); }
 
 // ----- spoon geometry -----
-function spoonRestAngle(px,py){ return Math.atan2(74-py,530-px); }
+// at rest the handle leans down to the cup handle, but the bowl never rises above reach (sugar can be pushed in, the doll can hop in)
+function spoonRestAngle(px,py){ return Math.max(Math.atan2(74-py,530-px),Math.atan2(py-86,px-BOWLX)); }
 function spoonLineY(x){ const sp=S.spoon; return sp.py+(x-sp.px)*Math.tan(sp.th); }
 function spoonEnd(){ return S.spoon.hooked?WALLX+1:WALLX-2; }
 function spoonY(x){ return x<314? spoonLineY(x)-3 : spoonLineY(x)+1; }
@@ -279,6 +281,8 @@ function launchCube(c,why){
 // ===== cubes =====
 function cubeTryMove(c,d){
   const nx=c.x+d; const lead=nx+sgn(d)*9;
+  // sugar seated in the bowl only shifts inside the bowl (it changes the lever arm); the doll climbs over it
+  if(onSpoon(c.x,c.y)&&c.x<316&&c.x>262&&(nx>312||nx<270)) return false;
   // other cubes
   for(const o of S.cubes){ if(o===c||o.gone||o.fall||o.air)continue; if(Math.abs(o.x-nx)<18&&Math.abs(o.y-c.y)<14) return false; }
   // walls (spoon bowl lip allows a bigger hop-in)
@@ -293,6 +297,7 @@ function cubeTryMove(c,d){
   const g=groundAt(nx,c.y+34,c);
   if(g.y>c.y+STEP&&!g.s.spoon) return false;
   c.x=nx;
+  if(onSpoon(nx,g.y)&&S.t-(S.lastSugarLog||0)>0.8){ S.lastSugarLog=S.t; logD('sugarOnSpoon',{cube:c.id,x:Math.round(nx),th:+S.spoon.th.toFixed(3)}); }
   if(g.y<c.y-2){ c.air=true; c.vy=0; c.vx=d/0.016*0.3; }
   else { if(g.y>c.y+3){ c.hopv=1; SND.sugar(); } c.y=g.y; }
   return true;
@@ -307,7 +312,7 @@ function updCubes(dt){
     if(c.air){ c.vy-=GRAV*dt; c.x+=c.vx*dt; c.vx*=Math.exp(-3*dt); const ny=c.y+c.vy*dt; const g=groundAt(c.x,c.y,c);
       if(ny<=g.y){ c.y=g.y; c.air=false; c.vy=0; c.vx=0; SND.sugar(); puff(c.x,c.y,3,'sugar'); } else c.y=ny; continue; }
     // sugar settles into the dip of the spoon bowl
-    if(onSpoon(c.x,c.y)&&c.x<316&&Math.abs(c.x-BOWLX)>1&&!c.pushed){ const nx=c.x+clamp(BOWLX-c.x,-40*dt,40*dt); let ok=true;
+    if(onSpoon(c.x,c.y)&&c.x<272&&!c.pushed){ const nx=c.x+clamp(276-c.x,-40*dt,40*dt); let ok=true;
       for(const o of S.cubes){ if(o!==c&&!o.gone&&Math.abs(o.x-nx)<18&&Math.abs(o.y-c.y)<14) ok=false; } if(ok) c.x=nx; }
     c.pushed=false;
     // ride / settle
@@ -418,14 +423,14 @@ function startHop(dir,top,back,lx){
   if(top!=null){ y1=groundAt(x1,top+1).y;
     if(y1<top-3){ for(let o=4;o<=30;o+=2){ const xx=d.x+dir*o; const yy=groundAt(xx,top+1).y; if(yy>=top-3){ x1=xx; y1=yy; break; } } } }
   else y1=groundAt(x1,d.y+6).y;
-  if(wallAt(x1,y1,40)) { x1=d.x; y1=d.y; }
+  if(wallAt(x1,y1,40)||y1<d.y-80) { x1=d.x; y1=d.y; }
   d.hop={t:0,dur:back?0.22:0.3,x0:d.x,y0:d.y,x1,y1,h:back?10:Math.max(14,y1-d.y+12)}; d.squash=0.6; d.press=0; SND.hop();
 }
 // ===== input =====
 const drag={active:false,id:null,tx:0,ty:0,ox:0,oy:0};
 function onGround(){ const d=S.doll; return !d.air&&!d.hop; }
-function footstep(s,speed){
-  const d=S.doll; SND.step(s.kind,speed,0);
+function footstep(s,speed,load){
+  const d=S.doll; SND.step(s.kind,speed,load||0);
   if(s.ramp&&S.cake&&!d.slide) addRut(s,d.x,1);
   if(s.kind==='cookie') puff(d.x,d.y,2,'crumb',0,20,0.4);
   if(s.kind==='sugar') puff(d.x,d.y,2,'sugar',0,20,0.4);
@@ -445,7 +450,8 @@ function updDoll(dt){
       if(v>250) d.eyesRound=Math.max(d.eyesRound,0.6); }
     else d.y=ny; return; }
   if(d.slide){ const sl=d.slide; const g0=groundAt(d.x,d.y+4); const s=g0.s;
-    d.x+=sl.dir*sl.v*dt; const g=groundAt(d.x,d.y+STEP); d.y=g.y; sl.t+=dt;
+    const nx=d.x+sl.dir*sl.v*dt; const g=groundAt(nx,d.y+STEP); if(g.y<d.y-20||wallAt(nx+sl.dir*7,d.y,48)){ d.slide=null; d.squash=0.5; SND.land(); return; }
+    d.x=nx; d.y=g.y; sl.t+=dt;
     if(sl.t>0.08&&((!g.s.ramp)||rutAt(g.s,d.x)<2&&sl.t>0.25||sl.t>1.6)){ d.slide=null; d.squash=0.5; SND.land(); }
     if(Math.random()<0.4) puff(d.x,d.y,1,'cream',-sl.dir*30,20,0.3);
     return; }
@@ -469,7 +475,8 @@ function updDoll(dt){
       if(g.s.climb&&d.y<=CAKE.ly+3&&!(drag.active&&drag.ty>d.y+22)&&nx>CAKE.lx1&&nx<CAKE.lx2){ g={s:SURF.find(q=>q.kind==='cream'&&q.y1===CAKE.ly&&q.solid&&q.x1===CAKE.lx1)||g.s,y:CAKE.ly}; }
       if(g.s.ramp&&S.cake&&rutAt(g.s,nx)===2&&g.y>d.y){ nx=d.x+(nx-d.x)*0.5; if(Math.random()<0.15) puff(d.x,d.y,1,'cream',0,10,0.3); }
       const moved=Math.abs(nx-d.x);
-      if(g.y<d.y-3){ d.x=nx; d.air=true; d.vy=60; d.vx=dir*70; d.eyesRound=Math.max(d.eyesRound,0.5); }
+      if(g.y<d.y-3&&d.y-g.y>80){ d.vx=0; d.peek=1; } // too high to jump down: she stops and peeks over the edge
+      else if(g.y<d.y-3){ d.x=nx; d.air=true; d.vy=60; d.vx=dir*70; d.eyesRound=Math.max(d.eyesRound,0.5); }
       else{
         // cream ruts: slipping
         if(g.s.ramp&&S.cake){ const up=g.s.y2>g.s.y1?1:-1; const r=rutAt(g.s,nx);
@@ -479,7 +486,7 @@ function updDoll(dt){
         d.x=nx; d.y=g.y; if(pushing) d.vx*=0.85;
         const spd=Math.abs(d.vx); const stride=9+spd*0.06; d.stride=lerp(d.stride,clamp(spd/175,0,1),0.2);
         const ph=d.phase; d.phase+=moved/stride;
-        if(Math.floor(d.phase)!==Math.floor(ph)) footstep(g.s,spd);
+        if(Math.floor(d.phase)!==Math.floor(ph)) footstep(g.s,spd,pushing||onSpoon(d.x,d.y)?1:0);
         landed(g.s);
       } }
     d.idle=0;
@@ -495,6 +502,8 @@ function updDoll(dt){
     for(const off of [10,22]){ const x=d.x+dir*off; const g=groundAt(x,Math.min(drag.ty,d.y+HOP));
       if(g.y>d.y+STEP-2&&g.y<=d.y+HOP&&!wallAt(x,g.y,40)){ d.face=dir; startHop(dir,g.y,false,x); break; } }
   }
+  // safety net: never strand her on the plate beside the cake (a boost hop back onto the lower tier)
+  if(S.cake&&!d.hop&&!d.air&&d.y<CAKE.ly-20&&d.x>CAKE.px1-2&&!S.hand){ const tx=clamp(d.x,CAKE.lx1+12,CAKE.lx2-12); d.hop={t:0,dur:0.5,x0:d.x,y0:d.y,x1:tx,y1:CAKE.ly,h:30}; SND.hop(); logD('assistHop',{}); }
   // peek over edges
   const ahead=groundAt(d.x+d.face*16,d.y+3).y; d.peek=lerp(d.peek,d.y-ahead>22?1:0,1-Math.exp(-6*dt));
 }
@@ -705,12 +714,12 @@ function buildTextures(){
   TEX.sugar=ctx.createPattern(c,'repeat');
 }
 // ===== static background (wall + table) cached =====
-let BG=null, BGX0=0;
+let BG=null, BGX0=0; const BGD=1; // background is out of focus anyway: cache at 1x for speed
 function buildBG(){
   const hw=halfW(); const x0=WMIN-hw-30, x1=WMAX+hw+30; BGX0=x0;
-  const wpx=Math.ceil((x1-x0)*SC*DPR), hpx=Math.ceil(H*DPR);
-  const c=mkCanvas(Math.min(wpx,6000),hpx), g=c.getContext('2d'); g.scale(DPR,DPR);
-  const ww=c.width/DPR; const gx=x=>(x-x0)*SC;
+  const BD=BGD; const wpx=Math.ceil((x1-x0)*SC*BD), hpx=Math.ceil(H*BD);
+  const c=mkCanvas(Math.min(wpx,4000),hpx), g=c.getContext('2d'); g.scale(BD,BD);
+  const ww=c.width/BD; const gx=x=>(x-x0)*SC;
   const horizon=GY-150*SC*DY*1.6;
   // wall: warm plaster, blurred tiles, window light
   let gr=g.createLinearGradient(0,0,0,horizon); gr.addColorStop(0,'#5a4636'); gr.addColorStop(0.55,'#8a7058'); gr.addColorStop(1,'#a88a6c');
@@ -1111,8 +1120,8 @@ function update(dt){
 function draw(){
   ctx.setTransform(DPR,0,0,DPR,0,0);
   if(!BG) buildBG();
-  ctx.fillStyle='#3a281b'; ctx.fillRect(0,0,W,H);
-  ctx.drawImage(BG,0,0,BG.width,BG.height,X(BGX0),0,BG.width/DPR,BG.height/DPR);
+  { const sx=Math.max(0,Math.floor(-X(BGX0)*BGD)); const sw=Math.min(BG.width-sx,Math.ceil(W*BGD)+2);
+    if(sw>0) ctx.drawImage(BG,sx,0,sw,BG.height,X(BGX0)+sx/BGD,0,sw/BGD,BG.height/BGD); }
   drawBoard(); drawCookie(); drawSupports();
   const onSp=[],flying=[];
   for(const c of S.cubes){ if(c.gone)continue; if(c.fall){flying.push(c);continue;} if(onSpoon(c.x,c.y)) onSp.push(c); else if(c.x<CUP.x1||c.y<CUP.rim-2) drawCube(c); }
