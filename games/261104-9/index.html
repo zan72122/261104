@@ -290,7 +290,7 @@ function cubeTryMove(c,d){
     const top=surfY(s,lead); const lim=s.spoon?34:STEP;
     if(top>c.y+lim&&surfBot(s,lead)<c.y+18) return false; }
   // tumble into tea off a hooked bridge
-  if(onSpoon(c.x,c.y)&&S.spoon.hooked&&nx>WALLX-4){
+  if(onSpoon(c.x,c.y)&&S.spoon.hooked&&nx>WALLX-10){
     c.fall={t:0,dur:0.45,x0:c.x,y0:c.y,x1:rnd(566,585),y1:CUP.tea,h:22,why:'bridge'}; logD('pushTea',{cube:c.id}); return true; }
   // cube on the bare cup wall end: stop
   if(nx>WALLX-9&&c.y<CUP.rim-4&&nx<CUP.x2) { if(c.y<CUP.rim-4) return false; }
@@ -423,7 +423,7 @@ function startHop(dir,top,back,lx){
   if(top!=null){ y1=groundAt(x1,top+1).y;
     if(y1<top-3){ for(let o=4;o<=30;o+=2){ const xx=d.x+dir*o; const yy=groundAt(xx,top+1).y; if(yy>=top-3){ x1=xx; y1=yy; break; } } } }
   else y1=groundAt(x1,d.y+6).y;
-  if(wallAt(x1,y1,40)||y1<d.y-80) { x1=d.x; y1=d.y; }
+  if(wallAt(x1,y1,40)||y1<d.y-80) { if(!back){ d.press=-0.6; return; } x1=d.x; y1=d.y; }
   d.hop={t:0,dur:back?0.22:0.3,x0:d.x,y0:d.y,x1,y1,h:back?10:Math.max(14,y1-d.y+12)}; d.squash=0.6; d.press=0; SND.hop();
 }
 // ===== input =====
@@ -468,7 +468,7 @@ function updDoll(dt){
     if(!blocked){ const w=wallAt(nx+dir*7,d.y,48); if(w){ blocked=true; bTop=w.top; } }
     if(blocked){ d.press=(d.press||0)+dt; d.vx*=0.3;
       if(d.press>0.12){ if(bTop-d.y<=HOP) startHop(dir,bTop);
-        else { for(const off of [12,20,28]){ const x=d.x+dir*off; const g=groundAt(x,d.y+HOP); if(g.y>d.y+4&&!wallAt(x,g.y,40)){ startHop(dir,g.y); break; } } } } }
+        else { let found=false; for(const off of [12,20,28,36,44]){ const x=d.x+dir*off; const g=groundAt(x,d.y+HOP); if(g.y>d.y+4&&!wallAt(x,g.y,40)){ startHop(dir,g.y,false,x); found=true; break; } } if(!found) d.press=-0.6; } } }
     else{ d.press=0;
       let g=groundAt(nx,d.y+STEP);
       // on the cake's lower tier: a sideways drag walks past the foot of a cream slope, an upward drag climbs it
