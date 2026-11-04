@@ -160,7 +160,7 @@ const robot={x:350,dir:1,pauseT:0,pauseKind:'',stopped:false,home:false,sink:0,s
   face:'normal',faceT:0,ex:0,ey:0,waveT:-9,hopT:-9,tiltT:-9,noReachT:0,stackT:0,stackedSome:false,
   chainT:-1,wheelRot:0,wig:0,ejectT:0,launchT:0,giggleT:-9,blink:2,cart:[],armStretch:0,swFlip:1,swT:-9,
   show:null,moving:false,speed:0,bodyX:300,bodyY:-60,cartX:194,cartY:0,ground:0,lastGround:0,trumpetHitT:-9,
-  gestT:-9,gestK:0,pullCD:0,grabT:-9,mouthT:-9,pauseHold:0,pendingShow:0,pendingKind:'',showAct:null,showT:0,cartG:0};
+  gestT:-9,gestK:0,pullCD:0,grabT:-9,mouthT:-9,pauseHold:0,pendingShow:0,pendingKind:'',showAct:null,showT:0,cartG:0,popT:0};
 function mkPart(id){return {id,on:false,lx:0,ly:0,x:TRAY[id].x,y:TRAY[id].y,home:'tray',sq:0,lift:0,hop:0,
   drag:false,ret:null,wob:0,attT:-9,dx:0,dy:0,px:0,py:0};}
 const parts={hand:mkPart('hand'),wheels:mkPart('wheels'),trumpet:mkPart('trumpet')};
@@ -423,6 +423,8 @@ function canPhysics(dt){
     }
   }
 }
+function stackImm(c){if(!c.stacked||c.stackFar)return false;
+  if(Math.abs(robot.x-c.x)>300||NOW-(c.stackAt||-99)>20){c.stackFar=true;return false;}return true;}
 function hardHit(mover,sleeper){const sp=Math.hypot(mover.vx,mover.vy);if(sp>260){if(sleeper.stacked){sleeper.stacked=false;}return true;}return false;}
 
 // scripted flights
@@ -435,7 +437,7 @@ function flights(dt){
     c.x=lerp(f.sx,T.x,e);c.y=lerp(f.sy,T.y,e)-f.h*4*k*(1-k);c.rot+=dt*9*(f.to==='cart'?1:-1);
     if(k>=1){
       if(f.to==='cart'){c.st='cart';c.rot=0;S.cartIn(robot.cart.length);robot.sinkV+=60;sparks(T.x,T.y,3,P.white,120);}
-      else if(f.to==='stack'){c.st='free';c.stacked=true;c.sleep=1;c.vx=c.vy=0;c.rot=0;c.sq=.8;S.clink(.8+f.h2*.06);sparks(c.x,c.y-CHH,4,P.yel,140);}
+      else if(f.to==='stack'){c.st='free';c.stacked=true;c.stackAt=NOW;c.stackFar=false;c.sleep=1;c.vx=c.vy=0;c.rot=0;c.sq=.8;S.clink(.8+f.h2*.06);sparks(c.x,c.y-CHH,4,P.yel,140);}
       else if(f.to==='seat'){seatDone(c,f.k);}
       else{c.st='free';c.vx=f.vx||0;c.vy=f.vy||0;c.rot=0;}
       c.fly=null;
@@ -472,7 +474,7 @@ function floatContact(){
     if(c.x+CWH<x0||c.x-CWH>x1||c.y+CHH<y0||c.y-CHH>GY)continue;
     if(parade.active){ // bulldoze along
       const dir=flt.vx>=0?1:-1; c.x=dir>0?x1+CWH+1:x0-CWH-1; c.vx=flt.vx*1.2+dir*40; c.vy=-120; wake(c); c.stacked=false; continue;}
-    if(c.y<y0+20&&c.vy>0){c.y=y0-CHH;c.vy=-Math.abs(c.vy)*.5;continue;}
+    if(c.y<y0+20&&c.vy>0){c.y=y0-CHH;c.vy=-Math.abs(c.vy)*.5;if(Math.abs(c.vx)>60){flt.vx+=clamp(c.vx*.2,-40,40);flt.hitT=NOW;S.don();burst(c.x,c.y+CHH,18);}continue;}
     const fromLeft=c.x<flt.x; const sp=Math.abs(c.vx);
     c.x=fromLeft?x0-CWH-1:x1+CWH+1;
     if(sp>90){const push=(fromLeft?1:-1)*Math.min(70,sp*.22);flt.vx+=push;flt.hitT=NOW;flt.rock+=push*.01;
@@ -506,8 +508,8 @@ function startPause(kind){robot.pauseT={gap:3.6,float:3.2,end:.6}[kind]||.6;robo
 function drive(dt){
   const lim=robotLimits(),v=speed();
   if(robot.home){const d=HOME-robot.x;
-    if(Math.abs(d)<3){robot.x=HOME;robot.home=false;robot.stopped=true;robot.dir=1;G.afterParade=true;
-      girl.clapT=NOW;S.clap();S.brake();G.dirty=true;robot.face='happy';robot.faceT=1.5;}
+    if(Math.abs(d)<3){robot.x=HOME;robot.home=false;robot.stopped=true;robot.dir=1;
+      girl.clapT=NOW;S.clap();S.brake();G.dirty=true;robot.face='happy';robot.faceT=1.5;robot.popT=1.2;}
     else{robot.dir=d>0?1:-1;robot.x+=robot.dir*Math.min(Math.abs(d),v*dt);robot.moving=true;}
     return;}
   if(robot.stopped)return;
@@ -525,6 +527,12 @@ function drive(dt){
     if(robot.x<=lim[0]+.01)startPause('end');
     else{robot.x=Math.max(lim[0],robot.x-v*dt);robot.moving=true;if(robot.x<=lim[0])startPause('end');}
   }
+}
+// after a parade the first part of the show pops into the toolbox, inviting a new order
+function popFirst(){
+  const id=G.order[0];if(!id)return;const p=parts[id];if(!p.on||p.drag)return;
+  let w;if(id==='hand'&&HG.ok)w=HG.tip;else if(id==='wheels')w=l2w(0,BHH+22);else w=l2w(p.lx,p.ly);
+  detachPart(p);p.x=w.x;p.y=w.y;returnHome(p);S.boing();sparks(w.x,w.y,8,P.yel,220);burst(w.x,w.y,24);girl.wowT=NOW;
 }
 function topCart(){for(let i=robot.cart.length-1;i>=0;i--){const c=cans[robot.cart[i]];if(c.st==='cart')return c.id;}return -1;}
 function takeFromCart(id){const i=robot.cart.indexOf(id);const p=cartCanPos(Math.max(0,i));robot.cart.splice(i,1);
@@ -567,9 +575,9 @@ function robotBeam(dt){
   robot.pullCD-=dt;
   if(act&&G.mode==='pull'&&pulling<3&&robot.pullCD<=0){
     let best=null,bd=1e9;
-    for(const c of cans){if(c.st!=='free'||c.stacked||c.imm>0)continue;if(beamDist(c.x,c.y)>=BEAMR)continue;
+    for(const c of cans){if(c.st!=='free'||stackImm(c)||c.imm>0)continue;if(beamDist(c.x,c.y)>=BEAMR)continue;
       const d=dist(c.x,c.y,HG.tip.x,HG.tip.y);if(d<bd){bd=d;best=c;}}
-    if(best){best.st='pull';best.pullT=0;best.sleep=0;best.vx*=.3;best.vy=-70;best.sq=.7;robot.pullCD=.32;S.pull();sparks(best.x,best.y,3,P.blueL,90);}
+    if(best){best.stacked=false;best.st='pull';best.pullT=0;best.sleep=0;best.vx*=.3;best.vy=-70;best.sq=.7;robot.pullCD=.32;S.pull();sparks(best.x,best.y,3,P.blueL,90);}
   }
   if(act&&G.mode==='push'){
     let pushed=false;
@@ -591,7 +599,7 @@ function robotBeam(dt){
     if(id>=0){const c=takeFromCart(id);launch(c,m.x-6,m.y-12,-270,-170);robot.mouthT=NOW;}
     robot.ejectT=.65;}
   if(G.mode==='pull'&&!robot.show&&robot.cart.length<CARTMAX&&robot.ejectT<=0){
-    for(const c of cans){if(c.st!=='free'||c.stacked||c.imm>0)continue;
+    for(const c of cans){if(c.st!=='free'||stackImm(c)||c.imm>0)continue;
       if(dist(c.x,c.y,m.x,m.y)<52&&Math.abs(c.y-(robot.cartG-CHH))<30){robot.cart.push(c.id);flyTo(c,'cart',.3,34);
         S.pull();robot.mouthT=NOW;robot.ejectT=.25;G.everPulled=true;G.dirty=true;break;}}
   }
@@ -603,12 +611,18 @@ function robotBeam(dt){
         c.vx=-c.vx*.5;c.vy=-200;people.forEach(p=>{p.wave=NOW+rnd(0,.3);});break;}}}
   // no reach -> tilt head, try a stretch
   if(HG.ok&&act&&G.mode==='pull'&&!robot.moving&&!robot.show){
-    const any=pulling>0||cans.some(c=>c.st==='free'&&!c.stacked&&c.imm<=0&&beamDist(c.x,c.y)<BEAMR)||cans.some(c=>c.st==='fly'&&c.fly&&c.fly.to==='cart');
+    const any=pulling>0||cans.some(c=>c.st==='free'&&!stackImm(c)&&c.imm<=0&&beamDist(c.x,c.y)<BEAMR)||cans.some(c=>c.st==='fly'&&c.fly&&c.fly.to==='cart');
     if(any)robot.noReachT=Math.min(robot.noReachT,0);
     else{robot.noReachT+=dt;
       if(robot.noReachT>2.6){robot.noReachT=-6;robot.tiltT=NOW;robot.hopT=NOW+.7;S.hmm();robot.face='hmm';robot.faceT=1.4;G.cueHandHint=9;}}
   }else if(robot.noReachT>0)robot.noReachT=0;
   else robot.noReachT=Math.min(0,robot.noReachT+dt);
+}
+function floatMissCheck(dt){
+  if(!G.open||!G.complete||parade.active||G.mode!=='push'||!HG.ok||robot.x<1250||robot.cart.length>0){robot.missT=0;return;}
+  if(NOW-flt.hitT<3||cans.some(c=>c.st==='free'&&!c.sleep&&Math.hypot(c.vx,c.vy)>80)){robot.missT=0;return;}
+  robot.missT=(robot.missT||0)+dt;
+  if(robot.missT>1.5&&NOW-robot.tiltT>8){robot.missT=0;robot.tiltT=NOW;robot.hopT=NOW+.7;S.hmm();robot.face='hmm';robot.faceT=1.4;G.cueHandHint=9;}
 }
 function robotStack(dt){
   if(!(robot.stopped&&hasWheels()&&HG.ok&&G.mode==='pull'&&!robot.show&&robot.chainT<0))return;
@@ -746,13 +760,13 @@ function paradeUpdate(dt){
 }
 function endParade(){
   parade.active=false; people.forEach(p=>p.dance=null); robot.showAct=null; girl.dance=null;
-  if(hasWheels()){robot.home=true;robot.stopped=false;}else G.afterParade=true;
+  if(hasWheels()){robot.home=true;robot.stopped=false;}else robot.popT=1.2;
   G.dirty=true; S.success(); girl.clapT=NOW;
 }
 // ============ girl & townspeople ============
 function girlUpdate(dt){
   if(!G.open||G.openT>=0&&G.openT<.42){girl.tx=48;}
-  else{const mx=G.complete?1740:GAP.x0-70;girl.tx=parade.active?girl.x:clamp(robot.x-220,-70,mx);}
+  else{const mx=G.complete?1740:GAP.x0-70;girl.tx=parade.active?girl.x:clamp(robot.x-250,-70,mx);}
   const d=girl.tx-girl.x; girl.moving=Math.abs(d)>3;
   if(girl.moving){const sp=Math.min(175,Math.abs(d)*3+30);girl.x+=Math.sign(d)*Math.min(Math.abs(d),sp*dt);girl.walk+=dt*sp/20;girl.flip=d>0?1:-1;}
   else girl.flip=robot.x>=girl.x?1:-1;
@@ -869,7 +883,7 @@ function overviewCam(t){const c=fitCam(LY.full,{x0:TOWN.x0,x1:TOWN.x1,y0:-470,y1
   return c;}
 const TC={cx:600,cy:0,s:1,init:false};
 function townCamTarget(){
-  const W=LY.W,H=LY.H,s=clamp(Math.min(W/1150,H/820),.64,1.15),vw=W/s,vh=H/s;
+  const W=LY.W,H=LY.H,s=clamp(Math.min(W/(LY.portrait?900:1150),H/820),.64,1.15),vw=W/s,vh=H/s;
   let fx=robot.x+robot.dir*70;
   if(parade.active)fx=lerp(robot.x,flt.x,.5);
   if(IN.drag)fx=TC.cx; // hold still while placing parts
@@ -920,8 +934,9 @@ function computeCue(){
     if(G.cueHandHint>0||Pp.hand.lx<0)return 'hand';
     return 'wheels';
   }
-  if(robot.x>GAP.x1&&G.mode==='pull'&&robot.cart.length>0)return 'switch';
-  if(G.mode==='push'&&robot.cart.length===0)return 'switch';
+  if(G.cueHandHint>0)return 'hand';
+  if(robot.x>1150&&G.mode==='pull'&&robot.cart.length>0)return 'switch';
+  if(G.mode==='push'&&robot.cart.length===0&&robot.x<1250)return 'switch';
   return 'trumpet';
 }
 function cuePos(id){
@@ -1000,7 +1015,7 @@ function dragPos(v){const p=IN.part;if(!p)return;const off=34/v.cam.s;p.x=IN.wx;
 function onUp(e,cancel){
   if(!cancel)audioInit();
   if(e.pointerId!==IN.id)return;
-  const pid=IN.id,h=IN.tgt,drag=IN.drag,part=IN.part,snap=IN.snap;
+  const pid=IN.id,h=IN.moved>28?null:IN.tgt,drag=IN.drag,part=IN.part,snap=IN.snap;
   IN.id=null;IN.tgt=null;IN.drag=false;IN.part=null;IN.snap=null;
   try{cv.releasePointerCapture(pid);}catch(_){}
   if(drag&&part){if(!cancel&&snap)attachPart(part,snap);else returnHome(part);}
@@ -1601,7 +1616,8 @@ function update(dt){
   if(robot.moving){robot.wheelRot+=robot.dir*speed()*dt/21;S.motor();}
   if(robot.showAct==='wheels')robot.wheelRot+=dt*9;
   robotPose(0);
-  robotBeam(dt);robotStack(dt);
+  if(robot.popT>0){robot.popT-=dt;if(robot.popT<=0)popFirst();}
+  robotBeam(dt);robotStack(dt);floatMissCheck(dt);
   flights(dt);canPhysics(dt*.5);canPhysics(dt*.5);bridgeCapture();floatContact();
   paradeUpdate(dt);girlUpdate(dt);peopleUpdate(dt);robotEyes(dt);
   for(const id of PART_IDS){const p=parts[id];p.px=p.x;p.py=p.y;}
@@ -1639,7 +1655,7 @@ loadGame();
 buildStatics();
 robotPose(0);
 layout();
-window.__G34={G,robot,parts,cans,girl,flt,parade,IN,CUE,DEMO,STORE,LY,TC,
+window.__G34={AU,G,robot,parts,cans,girl,flt,parade,IN,CUE,DEMO,STORE,LY,TC,
   view:()=>mainView(),w2s:(x,y)=>w2s(mainView(),x,y),hg:()=>HG,cue:()=>CUE.id,
   fast:sec=>{for(let i=0;i<sec*60;i++)update(1/60);},
   bench:n=>{const t0=performance.now();for(let i=0;i<n;i++){update(1/60);FRAMEN++;render();}return (performance.now()-t0)/n;}};
