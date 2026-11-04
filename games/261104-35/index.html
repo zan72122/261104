@@ -1142,7 +1142,7 @@ function layout(){
   cv.width=Math.round(SW*DPR);cv.height=Math.round(SH*DPR);cv.style.width=SW+'px';cv.style.height=SH+'px';
   readSafe();
   const port=SH>SW*1.02;if(port!==VPORT||!L.ok){VPORT=port;rebuildViewIndex();}
-  if(VPORT){CV=0.98;KV=0.52;}else{CV=0.8;KV=0.58;}
+  if(VPORT){CV=clamp(0.8+(SH/SW-1.45)*0.42,0.8,0.98);KV=lerp(0.58,0.52,(CV-0.8)/0.18);}else{CV=0.8;KV=0.58;}
   const trayH=clamp(Math.min(SW,SH)*0.25,92,150);L.trayH=trayH;L.trayTop=SH-SAFE.b-trayH;
   const x0=SAFE.l+6,x1=SW-SAFE.r-6,y1=L.trayTop+trayH*0.16;let y0=SAFE.t+6;
   const wC=VA+2*FR,hC=(VB+2*FR)*CV+RIMH*KV;
@@ -1197,9 +1197,9 @@ function buildTextures(){
   TX.woodTray=woodCanvas(512,128,false,'#7a4f2b','#966236',31);
   // background: damp garden soil with little pebbles
   {const w=Math.ceil(SW*d),h=Math.ceil(SH*d);const c=mkC(w,h),g=c.getContext('2d');
-    const gr=g.createLinearGradient(0,0,0,h);gr.addColorStop(0,'#3a2c20');gr.addColorStop(1,'#2a1f17');g.fillStyle=gr;g.fillRect(0,0,w,h);
-    const R=mulberry32(5);for(let k=0;k<w*h/260;k++){const x=R()*w,y=R()*h,r=(R()*1.6+0.4)*d;g.fillStyle=R()<0.5?`rgba(20,12,6,${0.15+R()*0.25})`:`rgba(140,110,80,${0.06+R()*0.12})`;g.fillRect(x,y,r,r);}
-    for(let k=0;k<w*h/9000;k++){const x=R()*w,y=R()*h,r=(R()*2.5+1.2)*d;const gg=g.createRadialGradient(x-r*0.3,y-r*0.3,0,x,y,r);gg.addColorStop(0,'#8a8378');gg.addColorStop(1,'#3e3830');g.fillStyle=gg;g.beginPath();g.ellipse(x,y,r*1.2,r*0.8,R()*3,0,TAU);g.fill();}
+    const gr=g.createLinearGradient(0,0,0,h);gr.addColorStop(0,'#4a3626');gr.addColorStop(1,'#35271c');g.fillStyle=gr;g.fillRect(0,0,w,h);
+    const R=mulberry32(5);for(let k=0;k<w*h/90;k++){const x=R()*w,y=R()*h,r=(R()*1.4+0.5)*d;g.fillStyle=R()<0.6?`rgba(25,15,8,${0.12+R()*0.2})`:`rgba(120,90,60,${0.06+R()*0.1})`;g.fillRect(x,y,r,r);}
+    for(let k=0;k<w*h/30000;k++){const x=R()*w,y=R()*h,r=(R()*2.2+1.2)*d;const gg=g.createRadialGradient(x-r*0.3,y-r*0.3,0,x,y,r);gg.addColorStop(0,'#6e6256');gg.addColorStop(1,'#3a2f25');g.fillStyle=gg;g.beginPath();g.ellipse(x,y,r*1.2,r*0.8,R()*3,0,TAU);g.fill();}
     const vg=g.createRadialGradient(w/2,h*0.45,Math.min(w,h)*0.2,w/2,h*0.45,Math.max(w,h)*0.75);vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,0.35)');g.fillStyle=vg;g.fillRect(0,0,w,h);
     TX.bg=c;}
   // sand grain overlay tile (device pixels)
@@ -1632,7 +1632,7 @@ function drawShelf(){
   if(L.shelf){const s=L.shelf;ctx.save();ctx.fillStyle=TX.patH;const y=s.y+s.h*0.32;ctx.translate(s.x0,y);ctx.fillRect(0,0,s.x1-s.x0,Math.max(8,s.h*0.16));ctx.restore();
     ctx.fillStyle='rgba(10,5,2,0.35)';ctx.fillRect(s.x0,s.y+s.h*0.32+Math.max(8,s.h*0.16),s.x1-s.x0,4);}
   for(const f of UI.figs){if(f.held)continue;drawFig(f,f.x,f.y-(f.hop||0),f.r*(1+(f.sel||0)*0.25));f.hop=Math.max(0,(f.hop||0)-0.6);f.sel=Math.max(0,(f.sel||0)-0.008);}
-  const nt=UI.newTray;if(nt.on){nt.show=Math.min(1,nt.show+0.03);}else nt.show=Math.max(0,nt.show-0.05);
+  const nt=UI.newTray;
   if(nt.show>0&&!nt.held){const lift=UI.guide==='newTray'?guideBob():0;if(UI.guide==='newTray')glowAt(nt.x,nt.y-lift,nt.r*1.9,guideGlow());drawNewTray(nt.x+(1-nt.show)*60,nt.y-lift,nt.r,nt.show);}
 }
 function drawNewTray(x,y,r,a){
@@ -1891,13 +1891,13 @@ function startNextRound(){
   const oldH=Hs.slice(),oldM=Mo.slice(),oldW=Wd.slice(),oldP=Pk.slice();
   const seed=((world.seed*48271+world.round*977+((Math.random()*1e6)|0))%2147483646)+1;
   genWorld(seed,VPORT,computeDishPt());world.baseAvg=avgBase();
-  roundTrans={t:0,dur:2.0,nH:Hs.slice(),nM:Mo.slice(),nDr:Dr.slice(),nB:Base.slice(),swept:new Uint8Array(GN)};
+  roundTrans={t:0,dur:2.0,nH:Hs.slice(),nM:Mo.slice(),nW:Wd.slice(),nDr:Dr.slice(),nB:Base.slice(),swept:new Uint8Array(GN)};
   Hs.set(oldH);Mo.set(oldM);Wd.set(oldW);Pk.set(oldP);Dr.fill(0);
   cam.zT=L.zIn;SND.whoosh();SND.sand(1.2,0.8);ev('round_next',{seed});
 }
 function updateRound(dt){
   const R=roundTrans;if(!R)return;R.t+=dt;const f=clamp(R.t/R.dur,0,1);const front=f*(VB+6)-3;
-  for(let i=0;i<GN;i++){if(R.swept[i])continue;const b=viewB(i%GW+0.5,(i/GW|0)+0.5);if(b<front){R.swept[i]=1;Hs[i]=R.nH[i];Mo[i]=R.nM[i];Wd[i]=0;Pk[i]=0;Tr[i]=0;Sa[i]=0;Ds[i]=0;Base[i]=R.nB[i];Dr[i]=R.nDr[i];Fl[i]=Fr[i]=Fu[i]=Fd[i]=0;
+  for(let i=0;i<GN;i++){if(R.swept[i])continue;const b=viewB(i%GW+0.5,(i/GW|0)+0.5);if(b<front){R.swept[i]=1;Hs[i]=R.nH[i];Mo[i]=R.nM[i];Wd[i]=R.nW[i];Pk[i]=0;Tr[i]=0;Sa[i]=0;Ds[i]=0;Base[i]=R.nB[i];Dr[i]=R.nDr[i];Fl[i]=Fr[i]=Fu[i]=Fd[i]=0;
       if(Math.random()<0.04){const x=i%GW+0.5,y=(i/GW|0)+0.5;burstGrains(x,y,Hs[i]+0.3,1,1.4,i);}}}
   const gone=o=>viewB(o.x,o.y)<front;
   for(let k=stones.length-1;k>=0;k--)if(gone(stones[k])&&stones[k].st!=='held'){puff(stones[k].x,stones[k].y,stones[k].z,1);stones.splice(k,1);}
@@ -2017,6 +2017,7 @@ function update(dt){
   for(const d of dolls)d.update(dt);
   updateBridges(dt);updateCastle(dt);updateRound(dt);
   updateParts(dt);updatePrints(dt);updateWind(dt);spawnFoam();
+  {const nt=UI.newTray;nt.show=nt.on?Math.min(1,nt.show+dt*1.8):Math.max(0,nt.show-dt*3);}
   const o=UI.items.dish;if(o){o.dent=Math.max(0,o.dent-dt*0.9);if(o.wet>0)o.wet=Math.max(0,o.wet-dt*0.012);}
   if(castle.st===2&&!roundTrans&&!UI.newTray.on&&(prog.topPour||prog.boatRun||prog.postCastle>=3)){UI.newTray.on=true;ev('new_tray');}
   updateGuide(dt);updateDemo(dt);
