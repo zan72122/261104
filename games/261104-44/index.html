@@ -547,11 +547,14 @@ function reactAll(c){
     if(k){ k.after={dest:n,then:'keep',run:false}; c.keeper=k.i; k.then='keep'; k.dest=n; }
     outs.forEach(r=>{ if(r!==k&&free(r)&&rnd()<0.6){ r.after={dest:n,then:'shop',run:false}; r.wait=rr(0,0.6); } });
   } else if(c.t==='X'){
-    const q=[];
-    outs.forEach(r=>{ if(!free(r)) return; const s=nodeOf(r), prev=bfs(s); const da=hops(prev,s,c.a), db=hops(prev,s,c.b);
-      if(da<99||db<99) q.push({r,far:da<=db?c.b:c.a,d:Math.min(da,db)}); });
-    q.sort((p,s)=>(p.r.i===balloon.holder?-1:s.r.i===balloon.holder?1:p.d-s.d));
-    q.forEach((o,k)=>{ o.r.after={dest:o.far,then:'wave',run:true}; o.r.wait=k*0.45; });
+    // a queue: everyone who can reach an end runs over; the balloon holder goes first
+    const q=[], el=e=>L.E[e].len/(EDGES[e].k==='V'?1.25:1), plen=pa=>pa?pa.reduce((s,x)=>s+el(x.e),0):1e9;
+    outs.forEach(r=>{ if(!free(r)) return; const s=nodeOf(r), prev=bfs(s); const la=plen(pathFrom(prev,s,c.a)), lb=plen(pathFrom(prev,s,c.b));
+      const rem=r.seg?(1-r.seg.t)*el(r.seg.e)*(RUN/WALK):0;
+      if(la<1e9||lb<1e9) q.push({r,far:la<=lb?c.b:c.a,tt:(Math.min(la,lb)+rem)/(RUN*L.u)+0.9}); });
+    q.sort((p,s)=>(p.r.i===balloon.holder?-1:s.r.i===balloon.holder?1:p.tt-s.tt));
+    let arr=-9;
+    q.forEach(o=>{ const at=Math.max(o.tt,arr+0.9); arr=at; o.r.after={dest:o.far,then:'wave',run:true}; o.r.wait=0.9+at-o.tt; });
   } else {
     const lo=res[c.a], up=res[c.b];
     const st=conns.find(h=>h.t==='H'&&h.st==='on'&&(h.a===c.a||h.b===c.a));
