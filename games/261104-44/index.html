@@ -24,7 +24,7 @@ body{position:fixed;left:0;top:0;right:0;bottom:0}
 const RED='#e2301f', BLUE='#1f4fae', YEL='#f7c61a', INK='#141414', WHITE='#ffffff';
 const TAU=Math.PI*2;
 const PMAX=90;               // particle cap
-const WALK=40, RUN=78;       // resident speeds (u/s)
+const WALK=48, RUN=90;       // resident speeds (u/s)
 
 /* ================= utils ================= */
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
@@ -456,9 +456,15 @@ function updEnvs(dt){
 function stallFolded(c){
   S.disc.fold++; S.rd.fold=1; SND.fold();
   const n=CONN[c.ci].node;
-  if(c.keeper>=0){ const k=res[c.keeper]; if(k.st==='out'&&!k.seg&&k.node===n) setAct(k,'sit',rr(5,8)); }
+  if(c.keeper>=0){ const k=res[c.keeper]; if(k.st==='out'&&!k.seg&&k.node===n) setAct(k,'sit',rr(6,10)); }
   c.keeper=-1;
-  residentsAtNode(n).forEach(r=>{ if(r.act!=='sit') setAct(r,benchFree(n)?'sit':'look',rr(4,7)); });
+  residentsAtNode(n).forEach(r=>{ if(r.act!=='sit') setAct(r,benchFree(n)?'sit':'look',rr(6,10)); });
+  if(!residentsAtNode(n).some(r=>r.act==='sit')){
+    // nobody was there: the nearest resident comes to rest on the bench that stayed
+    let best=null,bd=99;
+    res.forEach(r=>{ if(r.st!=='out'||r.evac||(r.act==='keep'&&!r.seg)) return; const s0=nodeOf(r), d=hops(bfs(s0),s0,n); if(d<bd){bd=d;best=r;} });
+    if(best&&bd<99){ best.after={dest:n,then:'sit',run:false}; best.wait=0.4; }
+  }
 }
 function benchFree(n){ return residentsAtNode(n).filter(r=>r.act==='sit').length<2; }
 // move everyone off a stair/bridge before it folds (to the nearest ledge = safe footing)
@@ -640,7 +646,7 @@ function updRes(r,dt){
   if(r.seg){
     if(paused) return;
     const E=L.E[r.seg.e], k=EDGES[r.seg.e].k;
-    const sp=(r.run?RUN:WALK)*L.u*(k==='V'?0.7:1)*(S.phase==='parade'?1.15:1);
+    const sp=(r.run?RUN:WALK)*L.u*(k==='V'?1.25:1)*(S.phase==='parade'?1.15:1);
     r.seg.t+=sp*dt/E.len;
     if(r.seg.t>=1){
       const e=EDGES[r.seg.e]; r.node=r.seg.dir>0?e.b:e.a; r.seg=null;
