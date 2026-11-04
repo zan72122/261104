@@ -870,7 +870,10 @@ function endPos(e){
 }
 function endBase(e){if(!e.tw)return endPos(e);const tw=e.tw;e.tw=null;const p=endPos(e);e.tw=tw;return {x:p.x,y:p.y};}
 function newThread(a,b){const th={id:++tidN,e:[a,b],born:NOW,flags:[],tension:0,vib:0,pulses:[],cross:[],len:0,pts:[],rest:[],bb:[0,0,0,0],hue:rnd()};threads.push(th);
-  if(threads.length>30){const old=threads.find(t=>attached(t.e[0])&&attached(t.e[1])&&t.e[0].type!=='drag'&&t.e[1].type!=='drag');if(old)threads.splice(threads.indexOf(old),1);}
+  if(threads.length>40){ // keep memory: recycle a wall-pin garland first, only then the oldest link
+    const free=t=>attached(t.e[0])&&attached(t.e[1])&&!PTR_BUSY(t);
+    const old=threads.find(t=>free(t)&&t.e.some(e=>e.type==='pin'))||threads.find(free);
+    if(old)threads.splice(threads.indexOf(old),1);}
   return th;}
 function countEnds(k){let n=0;threads.forEach(t=>t.e.forEach(e=>{if(e.type==='obj'&&e.key===k)n++;}));return n;}
 function threadsOf(k){const r=[];threads.forEach(t=>t.e.forEach((e,i)=>{if(keyOf(e)===k&&attached(e)&&attached(t.e[1-i]))r.push([t,i]);}));return r;}
@@ -1178,6 +1181,7 @@ function growDecor(th){
 // ================= input =================
 const PTR=new Map();
 let lastInput=0,demo=null,demoDone=false,touched=false;
+function PTR_BUSY(th){for(const m of PTR.values())if(m.th===th)return true;return false;}
 function DRAGGING(){for(const m of PTR.values())if(m.mode==='end')return true;return false;}
 function hitTress(p){
   let best=null,bd=1e9;
