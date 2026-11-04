@@ -1443,7 +1443,7 @@ function drawBridge(b){
   for(let k=0;k<shown;k++){const t=(k+0.5)/n,hl=0.5/n*len*0.86;const cx=lerp(b.x0,b.x1,t),cy=lerp(b.y0,b.y1,t),h=deckAt(b,t)+wig*Math.sin(k);
     const c=[[cx-ax*hl+px*hw,cy-ay*hl+py*hw],[cx+ax*hl+px*hw,cy+ay*hl+py*hw],[cx+ax*hl-px*hw,cy+ay*hl-py*hw],[cx-ax*hl-px*hw,cy-ay*hl-py*hw]].map(q=>proj(q[0],q[1],h));
     const v=b.pv[k%b.pv.length];const base=[176+v*200,126+v*150,76+v*90];
-    quad(c);const g=ctx.createLinearGradient(c[0][0],c[0][1],c[2][0],c[2][1]);g.addColorStop(0,rgb(base[0]*1.1,base[1]*1.1,base[2]*1.05));g.addColorStop(1,rgb(base[0]*0.78,base[1]*0.74,base[2]*0.7));ctx.fillStyle=g;ctx.fill();
+    quad(c);ctx.fillStyle=rgb(base[0],base[1],base[2]);ctx.fill();
     ctx.strokeStyle='rgba(60,34,14,0.45)';ctx.lineWidth=1;ctx.stroke();
     const e1=c[3],e2=c[2];ctx.strokeStyle='rgba(50,28,10,0.55)';ctx.lineWidth=Math.max(1,CS*0.12);ctx.beginPath();ctx.moveTo(e1[0],e1[1]);ctx.lineTo(e2[0],e2[1]+CS*0.12);ctx.stroke();}
   // rope rails
@@ -2076,7 +2076,7 @@ window.__sb={get NOW(){return NOW;},EV,world,prog,castle,stones,leaves,dolls,bri
   proj,pickWorld,findPath,groundAt,surfAt,get fps(){return fps;},get frameAvg(){return frameAvg;},holds,
   advance(sec){const n=Math.round(sec*60);for(let k=0;k<n;k++){NOW+=1/60;update(1/60);}render();},
   startCastle(){startCastle();},genWorld,spawnDolls,computeDishPt,
-  TIM,Dr,flowAt(x,y){const i=ci(x,y);return Math.hypot(Vx[i],Vy[i])*Math.min(Wd[i],0.5);},get VPORT(){return VPORT;},get roundTrans(){return roundTrans;},loadSaves,savedList:()=>savedList};
+  TIM,Dr,get audio(){return AU.ctx?AU.ctx.state:'none';},get paused(){return paused;},flowAt(x,y){const i=ci(x,y);return Math.hypot(Vx[i],Vy[i])*Math.min(Wd[i],0.5);},get VPORT(){return VPORT;},get roundTrans(){return roundTrans;},loadSaves,savedList:()=>savedList};
 boot();
 })();
 </script>
