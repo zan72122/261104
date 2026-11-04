@@ -293,7 +293,7 @@ function genWorld(seed,portrait,dishPt){
   const n2dir=V(0.07,0.5);const pdN2=toward(pd,n2dir,pd.r-1.7);
   const n2pts=meander(pdN2,toward(pA,n2dir,3.4),4,1.4,R);carveK(n2pts,pdBase-0.5,base(pA)-0.95,0.9,0.1);
   // shallow natural valley from the alternative spout spot
-  carveK(meander(spAlt,toward(pB,spAlt,3.2),5,2.4,R),base(spAlt)-0.42,base(pB)-1.0,1.1,0.08);
+  carveK(meander(spAlt,toward(pB,spAlt,2.6),5,2.2,R),base(spAlt)-0.75,base(pB)-1.3,1.15,0.1);
   // pool beds damp
   for(const p of [pA,pB])for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const d=Math.hypot(x+0.5-p[0],y+0.5-p[1]),i=y*GW+x;
     if(d<4.6)Mo[i]=Math.max(Mo[i],0.42);}
@@ -344,10 +344,11 @@ function waterStep(){
   for(let y=0;y<GH;y++){for(let x=0;x<GW;x++){const i=y*GW+x,w=Wd[i];
     if(w<1e-5){Fl[i]=Fr[i]=Fu[i]=Fd[i]=0;continue;}
     const h=Hs[i]+St[i]+w;let fl=0,fr=0,fu=0,fd=0,j;
-    if(x>0){j=i-1;fl=Fl[i]*WDAMP+g*(h-Hs[j]-St[j]-Wd[j]);if(fl<0)fl=0;}
-    if(x<GW-1){j=i+1;fr=Fr[i]*WDAMP+g*(h-Hs[j]-St[j]-Wd[j]);if(fr<0)fr=0;}
-    if(y>0){j=i-GW;fu=Fu[i]*WDAMP+g*(h-Hs[j]-St[j]-Wd[j]);if(fu<0)fu=0;}
-    if(y<GH-1){j=i+GW;fd=Fd[i]*WDAMP+g*(h-Hs[j]-St[j]-Wd[j]);if(fd<0)fd=0;}
+    let d;
+    if(x>0){j=i-1;d=h-Hs[j]-St[j]-Wd[j];fl=Fl[i]*(d>0?WDAMP:0.8)+g*d;if(fl<0)fl=0;}
+    if(x<GW-1){j=i+1;d=h-Hs[j]-St[j]-Wd[j];fr=Fr[i]*(d>0?WDAMP:0.8)+g*d;if(fr<0)fr=0;}
+    if(y>0){j=i-GW;d=h-Hs[j]-St[j]-Wd[j];fu=Fu[i]*(d>0?WDAMP:0.8)+g*d;if(fu<0)fu=0;}
+    if(y<GH-1){j=i+GW;d=h-Hs[j]-St[j]-Wd[j];fd=Fd[i]*(d>0?WDAMP:0.8)+g*d;if(fd<0)fd=0;}
     const s=(fl+fr+fu+fd)*WDT;if(s>w){const k=w/s;fl*=k;fr*=k;fu*=k;fd*=k;}
     Fl[i]=fl;Fr[i]=fr;Fu[i]=fu;Fd[i]=fd;}}
   let tf=0;
@@ -600,14 +601,30 @@ function updateLeaves(dt){
       else if(l.slide>2.4){ev('leaf_slide',{dist:+l.slide.toFixed(1),wind:l.windy||ws>0.2,slope:+gm.toFixed(2)});l.slide=0;l.windy=false;}
       if(sp>0.3&&ws>0.2)l.windy=true;
       if(ws>0.3&&Math.random()<dt*3)kickLeaf(l,2);
+      // on the castle, running water sweeps a resting leaf into the water way
+      if(castle.st===2&&castleDQ(l.x,l.y)<castle.R.top+0.7&&castleDQ(l.x,l.y)>0.5){const dx=castle.cx-l.x,dy=castle.cy-l.y,dd=Math.hypot(dx,dy)||1;l.x+=dx/dd*2.5*dt;l.y+=dy/dd*2.5*dt;l.z=surfAt(l.x,l.y);}
+      else if(castle.st===2&&Pk[i]>0.5){l.sweepT=(l.sweepT||0)-dt;if(l.sweepT<=0){l.sweepT=0.3;l.sweep=null;for(let j=-2;j<=2;j++)for(let k=-2;k<=2;k++){const q=ci(l.x+k,l.y+j);if(Wd[q]>0.12&&(!l.sweep||Wd[q]>l.sweep[2]))l.sweep=[l.x+k,l.y+j,Wd[q]];}}
+        if(l.sweep){const dx=l.sweep[0]-l.x,dy=l.sweep[1]-l.y,dd=Math.hypot(dx,dy)||1;l.x+=dx/dd*2.2*dt;l.y+=dy/dd*2.2*dt;l.z=surfAt(l.x,l.y);kickLeaf(l,1);}}
       if(bil(Wd,l.x,l.y)>0.1){l.st='float';ripple(l.x,l.y,1);SND.plop(0.3,1.7);}
       // stranded near water -> a craftsman fetches it
-      l.dry+=dt;l.fetch=l.dry>2&&nearWater(l.x,l.y,2.4)&&!l.claimed;
+      l.dry+=dt;l.fetch=l.dry>2&&(l.boat||nearWater(l.x,l.y,2.4))&&!l.claimed;
       continue;}
     if(l.st==='float'){const tx=bil(Vx,l.x,l.y)*0.92+wind.x*0.35,ty=bil(Vy,l.x,l.y)*0.92+wind.y*0.35;
       l.vx+=(tx-l.vx)*Math.min(1,dt*2.6);l.vy+=(ty-l.vy)*Math.min(1,dt*2.6);
+      // in still water a boat drifts toward the nearest current (or a dock in a pool)
+      if(Math.hypot(tx,ty)<0.4){l.seekT=(l.seekT||0)-dt;if(l.seekT<=0){l.seekT=0.35;let best=null,bq=0.1;
+          for(const R of [1.5,3,4.5])for(let k=0;k<12;k++){const a=k/12*TAU,x=l.x+Math.cos(a)*R,y=l.y+Math.sin(a)*R;if(x<1||y<1||x>GW-1||y>GH-1)continue;const j=ci(x,y);if(Wd[j]<0.1)continue;
+            const q=Math.hypot(Vx[j],Vy[j])*Math.min(Wd[j],0.5)/(1+R*0.15);if(q>bq){bq=q;best=[x-l.x,y-l.y];}}
+          for(const d of world.docks){const dd=Math.hypot(d.bx-l.x,d.by-l.y);if(dd<7&&Wd[ci(d.bx,d.by)]>0.1){best=[d.bx-l.x,d.by-l.y];break;}}
+          l.seek=best;}
+        if(l.seek){const L2=Math.hypot(l.seek[0],l.seek[1])||1;l.vx+=l.seek[0]/L2*1.6*dt;l.vy+=l.seek[1]/L2*1.6*dt;}}
+      else l.seek=null;
       let nx=l.x+l.vx*dt,ny=l.y+l.vy*dt;
-      if(bil(Wd,nx,l.y)<0.04){nx=l.x;l.vx*=-0.3;}if(bil(Wd,l.x,ny)<0.04){ny=l.y;l.vy*=-0.3;}
+      const wthr=surfAt(nx,ny)<surfAt(l.x,l.y)-0.2?0.008:0.03;
+      if(bil(Wd,nx,ny)<wthr){let best=null,bq=0.05;for(let k=0;k<8;k++){const a=k/8*TAU,px=l.x+Math.cos(a)*0.7,py=l.y+Math.sin(a)*0.7;const w=bil(Wd,px,py);if(w<0.012)continue;
+          const q=w*0.5+Math.hypot(bil(Vx,px,py),bil(Vy,px,py))*0.6+(Math.cos(a)*l.vx+Math.sin(a)*l.vy)*0.15;if(q>bq){bq=q;best=a;}}
+        if(best!==null){const sp=Math.max(0.7,Math.hypot(l.vx,l.vy))*0.8;l.vx=Math.cos(best)*sp;l.vy=Math.sin(best)*sp;nx=l.x+l.vx*dt;ny=l.y+l.vy*dt;}
+        else{nx=l.x;ny=l.y;l.vx*=-0.3;l.vy*=-0.3;}}
       for(const s of stones){if(s.st!=='rest'&&s.st!=='roll')continue;const dx=nx-s.x,dy=ny-s.y,d=Math.hypot(dx,dy),rs=s.r+0.45;if(d<rs&&d>1e-4){nx=s.x+dx/d*rs;ny=s.y+dy/d*rs;}}
       const sp=Math.hypot(nx-l.x,ny-l.y)/Math.max(dt,1e-4);
       l.x=clamp(nx,0.6,GW-0.6);l.y=clamp(ny,0.6,GH-0.6);l.z=surfAt(l.x,l.y);l.dist+=sp*dt;
@@ -616,7 +633,7 @@ function updateLeaves(dt){
       if(l.dist>4&&!l.boat){l.boat=true;prog.leafBoat=true;ev('leaf_boat',{x:+l.x.toFixed(1),y:+l.y.toFixed(1)});}
       if(sp<0.12)l.stuck+=dt;else l.stuck=Math.max(0,l.stuck-dt*2);
       l.fetch=l.stuck>3&&!l.claimed;
-      if(bil(Wd,l.x,l.y)<0.03){l.dry+=dt;if(l.dry>0.6){l.st='ground';l.dry=0;}}else l.dry=0;
+      if(bil(Wd,l.x,l.y)<0.01){l.dry+=dt;if(l.dry>0.8){l.st='ground';l.dry=0;}}else l.dry=0;
       if(Math.random()<dt*0.8)ripple(l.x,l.y,0.9);
       // docks
       for(const d of world.docks){if(Math.hypot(l.x-d.bx,l.y-d.by)<2.7){dockLeaf(l,d);break;}}
@@ -774,6 +791,8 @@ function finishBridge(b){
   for(const d of dolls)d.replanSoon=0.2;
 }
 function updateBridges(dt){
+  for(let k=bridges.length-1;k>=0;k--){const b=bridges[k];if(b.st==='plan'&&NOW-b.t0>18){bridges.splice(k,1);if(b.from&&b.from.st==='move'){b.from.st='open';rebuildBridgeMask();}
+      for(const d of dolls){if(d.job&&d.job.br===b){const g=d.job.goal;d.job=null;d.st='idle';d.timer=0.5;d.after=g;d.afterP='loop';}}ev('bridge_cancel',{id:b.id});}}
   for(const b of bridges){b.wiggle=Math.max(0,b.wiggle-dt*1.5);
     if(b.st==='open'&&!b.castle){let wet=false;for(const i of b.cells){if(Wd[i]>0.08){wet=true;break;}}b.dryT=wet?0:b.dryT+dt;}}
 }
@@ -844,6 +863,7 @@ class Doll{
     let old=null;for(const o of bridges){if(o===br||o.st!=='open'||o.castle)continue;if(o.dryT>4&&Math.hypot((o.x0+o.x1)/2-(br.x0+br.x1)/2,(o.y0+o.y1)/2-(br.y0+br.y1)/2)<36){old=o;break;}}
     if(old){br.from=old;old.st='move';rebuildBridgeMask();}
     this.job={type:'bridge',br,goal:this.goal,purpose:this.purpose,end};this.follow(pp,'toBridge');this.pendingBridge=null;
+    const bk=pp.cells[pp.cells.length-1];this.goal=[cx_(bk),cy_(bk)];
     ev('bridge_plan',{id:br.id,len:+site.len.toFixed(1),moving:!!old});return true;
   }
   goWait(ob){const b=nearestPassable(cx_(ob.b1),cy_(ob.b1),3);this.waitOb=ob;this.waitT=0;
@@ -852,7 +872,8 @@ class Doll{
   giveUp(){this.st='idle';this.timer=rr(1,2);this.setAnim('think',1);this.li=(this.li+1)%this.loop.length;}
   arrive(){
     const p=this.purpose;this.path=null;
-    if(p==='toBridge'&&this.job){const br=this.job.br;if(br.st==='plan'){br.st='build';this.st='build';const e=this.job.end;this.face=Math.atan2(e[3]-e[1],e[2]-e[0]);this.timer=2.2+br.len*0.42;br.buildT=this.timer;this.hamT=0;return;}}
+    if(p==='toBridge'&&this.job){const br=this.job.br;const e=this.job.end;if(br.st==='plan'&&Math.hypot(this.x-e[0],this.y-e[1])>3.2){const b=nearestPassable(e[0],e[1],2);if(b&&this.goTo(b[0],b[1],'toBridge'))return;}
+      if(br.st==='plan'){br.st='build';this.st='build';const e=this.job.end;this.face=Math.atan2(e[3]-e[1],e[2]-e[0]);this.timer=2.2+br.len*0.42;br.buildT=this.timer;this.hamT=0;return;}}
     if(p==='toStairs'&&this.job){this.st='build';this.timer=2.2;this.hamT=0;this.lookAt(this.job.st.mx,this.job.st.my,2.2);return;}
     if(p==='toWait'){this.st='wait';this.waitT=0;if(this.waitOb)this.lookAt(cx_(this.waitOb.mid),cy_(this.waitOb.mid),3);return;}
     if(p==='toLeaf'&&this.job){const l=this.job.leaf;if(l&&(l.st==='ground'||l.st==='float')&&Math.hypot(l.x-this.x,l.y-this.y)<2.6){
@@ -932,6 +953,7 @@ class Doll{
     if(this.recheck<=0){this.recheck=0.45;
       for(let k=this.pi;k<Math.min(this.path.length,this.pi+7);k++){const a=k>0?this.path[k-1]:ci(this.x,this.y),b=this.path[k];
         if(stepCost(a,b,this.purpose==='castle'?M_FREE:0,1)<0){if(this.goal){const g=this.goal;this.goTo(g[0],g[1],this.purpose==='toWait'?'loop':this.purpose);}return;}}}
+    if(this.purpose==='loop'&&!this.carry&&this.role!=='helper'){this.leafScan=(this.leafScan||0)-dt;if(this.leafScan<=0){this.leafScan=1.5;if(leaves.some(l=>l.fetch&&!l.claimed&&Math.hypot(l.x-this.x,l.y-this.y)<16)&&this.findLeafJob())return;}}
     this.refresh-=dt;
     if(this.refresh<=0&&this.purpose==='loop'&&this.goal){this.refresh=3.5;const g=this.goal;const t=nearestPassable(g[0],g[1]);if(t){const p=findPath(this.x,this.y,t[0],t[1],0);
       if(p){let rem=0;for(let k=this.pi;k<this.path.length;k++){const a=k>0?this.path[k-1]:ci(this.x,this.y);const c2=stepCost(a,this.path[k],0,1);rem+=c2<0?5:c2;}
@@ -998,7 +1020,7 @@ function planCastle(){
   const af=(x,y)=>(((Math.atan2(y-cy,x-cx)-rot)/TAU)%1+1)%1;
   for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x,X=x+0.5,Y=y+0.5,dx=X-cx,dy=Y-cy,d=cdq(dx,dy);if(d>R.bank)continue;
     const a=af(X,Y);let t,tb;
-    if(d<1.15){t=kTop-0.95;tb=0.7+a*0.1;}
+    if(d<1.15){t=kTop-1.2;tb=0.7+a*0.1;}
     else if(d<R.top){t=kTop;tb=0.66+a*0.12;}
     else if(d<R.keep){t=kTier;tb=0.52+a*0.12;}
     else if(d<R.court){t=kCourt;tb=0.36+Math.random()*0.12;if(groove(i)){t=kCourt-0.6;}}
@@ -1015,17 +1037,17 @@ function planCastle(){
     for(let y=Math.floor(ty-2.2);y<=ty+2.2;y++)for(let x=Math.floor(tx-2.2);x<=tx+2.2;x++){if(!inGrid(x,y))continue;const dd=Math.hypot(x+0.5-tx,y+0.5-ty);if(dd>2.0)continue;const i=y*GW+x;
       let h=kTower;if(dd>1.25&&(Math.floor((Math.atan2(y+0.5-ty,x+0.5-tx)+Math.PI)/TAU*8)%2))h-=0.8;T[i]=Math.max(T[i]||0,h);TB[i]=Math.min(TB[i],0.42+k*0.03);}});
   // water ways from the basin on top, down the keep, through a wall gate, across the moat, out to the old grooves
-  for(const r of c.rays){const ux=Math.cos(r.a),uy=Math.sin(r.a),reach=Math.hypot(r.to[0]-cx,r.to[1]-cy)+0.5;
-    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x,dx=x+0.5-cx,dy=y+0.5-cy;const s=dx*ux+dy*uy,q=Math.abs(-dx*uy+dy*ux);if(s<0.4||s>reach)continue;
-      const d=cdq(dx,dy);let bed,hw=0.95;
-      if(d<1.15)continue;
-      else if(d<R.top)bed=kTop-0.78-(d-1.15)*0.25;
-      else if(d<R.keep)bed=kTier-0.7-(d-R.top)*0.3;
-      else if(d<R.court)bed=kCourt-0.5-(d-R.keep)*0.06;
-      else if(d<R.wall){bed=kCourt-0.7;hw=1.25;}
-      else if(d<R.moat)continue;
-      else{bed=lerp(moatBed+0.3,Math.min(moatBed+0.25,Hs[ci(r.to[0],r.to[1])]-0.1),clamp((s-R.moat)/Math.max(1,reach-R.moat),0,1));hw=1.0;}
-      if(q>hw+0.6)continue;const tg=bed+(q<hw?(q/hw)*(q/hw)*0.25:0.25+(q-hw)/0.6*((isNaN(T[i])?Hs[i]:T[i])-bed-0.25));
+  // inner channels run along the grid axes (clean on the sand grid); the moat outlet heads for the old groove
+  {const used=[];for(const r of c.rays){let k=Math.round(r.a/(Math.PI/2));for(let t=0;t<4&&used.includes(((k%4)+4)%4);t++)k++;used.push(((k%4)+4)%4);r.a=k*Math.PI/2;}}
+  for(const r of c.rays){const ux=Math.round(Math.cos(r.a)),uy=Math.round(Math.sin(r.a));
+    const mp=[cx+ux*(R.moat-0.6),cy+uy*(R.moat-0.6)];r.mp=mp;r.ao=Math.atan2(r.to[1]-mp[1],r.to[0]-mp[0]);
+    const toBed=Math.min(moatBed+0.2,Hs[ci(r.to[0],r.to[1])]-0.1);
+    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x,dx=x+0.5-cx,dy=y+0.5-cy;const d=cdq(dx,dy);let bed,hw,q,s;
+      if(d<R.moat-0.3){s=dx*ux+dy*uy;q=Math.abs(-dx*uy+dy*ux);if(s<0.4)continue;hw=1.05;
+        if(d<1.15)continue;else if(d<R.top)bed=kTop-0.8-(d-1.15)*0.2;else if(d<R.keep)bed=kTier-0.7-(d-R.top)*0.3;
+        else if(d<R.court)bed=kCourt-0.5-(d-R.keep)*0.08;else if(d<R.wall){bed=kCourt-0.75;hw=1.3;}else{bed=moatBed;hw=1.3;}}
+      else{const rr2=segDist(x+0.5,y+0.5,mp[0],mp[1],r.to[0],r.to[1]);q=rr2[0];s=R.moat+rr2[1]*10;hw=1.1;bed=lerp(moatBed+0.3,toBed,rr2[1]);if(rr2[1]<=0.001&&q>2)continue;}
+      if(q>hw+0.6)continue;const base2=isNaN(T[i])?Hs[i]:T[i];const tg=bed+(q<hw?(q/hw)*(q/hw)*0.2:0.2+(q-hw)/0.6*(base2-bed-0.2));
       if(isNaN(T[i])){if(tg<Hs[i]){T[i]=tg;TB[i]=0.84+s*0.004;}}else if(tg<T[i]){T[i]=tg;TB[i]=Math.max(TB[i],0.8+s*0.006);}}}
   // gate for the craftsmen (a ramp through the wall)
   {const ux=Math.cos(thG),uy=Math.sin(thG);for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x,dx=x+0.5-cx,dy=y+0.5-cy;const s=dx*ux+dy*uy,q=Math.abs(-dx*uy+dy*ux);
@@ -1085,9 +1107,9 @@ function finishCastle(){
   const mk=(a,r0,r1,off)=>{const ux=Math.cos(a),uy=Math.sin(a),px=-uy,py=ux;off=off||0;return{x0:c.cx+ux*r0+px*off,y0:c.cy+uy*r0+py*off,x1:c.cx+ux*r1+px*off,y1:c.cy+uy*r1+py*off,len:Math.abs(r1-r0)};};
   const g=newBridge(mk(c.gate,c.R.wall-0.4,c.R.moat+0.9),true);g.st='open';g.prog=1;
   let reuse=(c.reuse||[]).length;let extra=0;
-  for(const r of c.rays){const b=newBridge(mk(r.a+0.42,c.R.wall-0.3,c.R.moat+0.9),true);b.st='open';b.prog=1;
-    if(reuse>0){reuse--;extra++;const ux=Math.cos(r.a),uy=Math.sin(r.a),s=c.R.moat+2.2,px=-uy,py=ux;
-      const b2=newBridge({x0:c.cx+ux*s+px*1.9,y0:c.cy+uy*s+py*1.9,x1:c.cx+ux*s-px*1.9,y1:c.cy+uy*s-py*1.9,len:3.8},true);b2.st='open';b2.prog=1;}}
+  for(const r of c.rays){const ux=Math.cos(r.ao),uy=Math.sin(r.ao),px=-uy,py=ux;const L=Math.hypot(r.to[0]-r.mp[0],r.to[1]-r.mp[1]);
+    const spots=[2.4];if(reuse>0&&L>6.5){reuse--;extra++;spots.push(Math.min(L-1.5,5.6));}
+    for(const t of spots){const mx=r.mp[0]+ux*t,my=r.mp[1]+uy*t;const b2=newBridge({x0:mx+px*1.9,y0:my+py*1.9,x1:mx-px*1.9,y1:my-py*1.9,len:3.8},true);b2.st='open';b2.prog=1;}}
   rebuildBridgeMask();stampStones();
   SND.castle();ev('castle_built',{towers:c.towers.length,rays:c.rays.length,bridges:bridges.length,reused:extra,caps:c.caps.length,flags:c.flags.length});
   for(let k=0;k<40;k++){const tw=c.towers[k%c.towers.length];addP(P_SPARK,tw.x+rr(-1,1),tw.y+rr(-1,1),tw.h+rr(0,1),rr(-0.6,0.6),rr(-0.6,0.6),rr(1.5,3.5),rr(1.2,2.2),rr(0.6,1.1),255,236,190,1);}
@@ -1692,7 +1714,7 @@ function releaseHold(h,cancel){
     case 'clump':{if(over){const m=newMud(t.x,t.y,zH,h.vol);m.fall0=zH;useMat('sand',0.5);ev('clump_drop',{elev:+(t.h-world.baseAvg).toFixed(1)});}
         else{const p=h.pt;addSand(p.x,p.y,h.vol,1.1,0.8);}break;}
     case 'wet':{const p=h.pt;if(p){addSand(p.x,p.y,0.05,0.8,0.7);SND.splat(0.4);}break;}
-    case 'spout':{if(!h.moved&&!cancel){const sp=world.spout;sp.timer=26;SND.spoutOn();prog.spout=true;ev('spout_on',{s:+sp.s.toFixed(1)});useMat('water',0.5);}
+    case 'spout':{if(!h.moved&&!cancel){const sp=world.spout;sp.timer=40;SND.spoutOn();prog.spout=true;ev('spout_on',{s:+sp.s.toFixed(1)});useMat('water',0.5);}
         else if(h.moved){ev('spout_moved',{s:+world.spout.s.toFixed(1)});}break;}
     case 'fig':{const f=h.obj;f.held=false;if(h.moved&&over){stampFig(f,t);}break;}
     case 'newTray':{UI.newTray.held=false;if(h.moved&&over&&!cancel){startNextRound();}break;}
