@@ -668,7 +668,7 @@ function updateMuds(dt){
       if(m.z-m.r<=g){const gr=gradAt(Hs,m.x,m.y),gm=Math.hypot(gr[0],gr[1]);const i=ci(m.x,m.y);notifyImpact(m.x,m.y,'mud');
         if(Wd[i]>0.3){SND.plop(1.2,0.8);burstDrops(m.x,m.y,surfAt(m.x,m.y),8,2);addSand(m.x,m.y,m.vol,1.0,1);muds.splice(k,1);continue;}
         const elev=g-world.baseAvg;
-        if(gm>0.28||elev>1.6){m.st='roll';m.vx=-gr[0]*3;m.vy=-gr[1]*3;m.z=g+m.r;SND.splat(0.6);burstMud(m.x,m.y,g,5,1.3);m.startElev=elev;ev('mud_roll_start',{elev:+elev.toFixed(1)});}
+        if(gm>0.28||elev>1.6){m.st='roll';m.vx=-gr[0]*3;m.vy=-gr[1]*3;m.z=g+m.r;SND.splat(0.6);burstMud(m.x,m.y,g,5,1.3);m.startElev=elev;m.x0=m.x;m.y0=m.y;ev('mud_roll_start',{elev:+elev.toFixed(1),x:+m.x.toFixed(1),y:+m.y.toFixed(1)});}
         else{depositMud(m);muds.splice(k,1);ev('mud_mound');}}
       continue;}
     // rolling: carve a valley
@@ -694,7 +694,7 @@ function updateMuds(dt){
   }
   let rum=0;for(const m of muds)if(m.st==='roll')rum=Math.max(rum,Math.min(1,Math.hypot(m.vx,m.vy)/5));LOOPV.rumble=rum;
 }
-function finishMud(m){prog.mudball=true;if(m.dist>3)ev('mud_valley',{dist:+m.dist.toFixed(1),hitStone:m.hit,afterHit:m.hit?+(m.dist-m.hitDist).toFixed(1):0});}
+function finishMud(m){prog.mudball=true;if(m.dist>3)ev('mud_valley',{dist:+m.dist.toFixed(1),hitStone:m.hit,afterHit:m.hit?+(m.dist-m.hitDist).toFixed(1):0,from:[+(m.x0||0).toFixed(1),+(m.y0||0).toFixed(1)],to:[+m.x.toFixed(1),+m.y.toFixed(1)]});}
 
 // =====================================================================
 //  path finding (A*, 8-neighbour) on the shared terrain
